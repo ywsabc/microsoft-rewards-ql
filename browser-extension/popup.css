@@ -1,0 +1,153 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+body {
+  width: 360px;
+  margin: 0;
+  color: #1f2937;
+  background: #f3f6fb;
+}
+
+main {
+  padding: 16px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+header p {
+  margin: 6px 0 14px;
+  color: #536176;
+}
+
+.card {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid #d8e0eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 6%);
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #b9c5d5;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+button {
+  padding: 9px 10px;
+  border: 1px solid #9aa8bc;
+  border-radius: 6px;
+  color: #172033;
+  background: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: #0b6bcb;
+  color: #fff;
+  background: #0b6bcb;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+a {
+  color: #0b63b6;
+}
+
+.message {
+  min-height: 20px;
+  margin: 10px 0 0;
+}
+
+.ok {
+  color: #08783e;
+}
+
+.error {
+  color: #b42318;
+}
+
+details {
+  color: #46556b;
+}
+
+details ul {
+  padding-left: 20px;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #e5e7eb;
+    background: #111827;
+  }
+
+  header p,
+  details {
+    color: #b7c1d1;
+  }
+
+  .card {
+    border-color: #374151;
+    background: #1f2937;
+  }
+
+  input,
+  button {
+    border-color: #526176;
+    color: #e5e7eb;
+    background: #111827;
+  }
+
+  button.primary {
+    background: #147bd1;
+  }
+
+  a {
+    color: #6db6f2;
+  }
+
+  .ok {
+    color: #57d68d;
+  }
+
+  .error {
+    color: #ff8a80;
+  }
+}

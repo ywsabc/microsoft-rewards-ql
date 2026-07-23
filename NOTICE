@@ -1,0 +1,18 @@
+Microsoft Rewards for QingLong
+
+This project contains and derives from:
+
+  微软积分商城签到（全能智能重构版） v3.0.2
+  Author: liyan20001124-byte
+  Source: https://scriptcat.org/zh-CN/script-show-page/6241
+  License: MIT
+
+The unmodified upstream source is preserved at:
+
+  upstream/MicrosoftRewardsAuto-3.0.2.user.js
+
+SHA-256:
+
+  12e286fccbac50ce615816582e5f723581076fbbea27877717649bd6b440629f
+
+The QingLong refactor and browser extension remain licensed under MIT.

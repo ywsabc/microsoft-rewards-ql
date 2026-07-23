@@ -1,0 +1,15 @@
+{
+  "name": "microsoft-rewards-ql",
+  "version": "3.0.2-ql.2",
+  "private": true,
+  "description": "Microsoft Rewards v3.0.2 refactored for QingLong",
+  "license": "MIT",
+  "main": "microsoft_rewards_ql.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node --check microsoft_rewards_ql.js",
+    "test": "node --test test/*.test.js"
+  }
+}

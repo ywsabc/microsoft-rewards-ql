@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rewards Cookie 导出</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Rewards Cookie 导出</h1>
+      <p>数据只在浏览器本地读取并复制，不会上传。</p>
+    </header>
+
+    <section class="card" aria-labelledby="status-title">
+      <h2 id="status-title">登录状态</h2>
+      <p id="status" role="status">正在检查 rewards.bing.com Cookie…</p>
+      <a href="https://rewards.bing.com/" target="_blank" rel="noreferrer">打开 Microsoft Rewards</a>
+    </section>
+
+    <section class="card" aria-labelledby="export-title">
+      <h2 id="export-title">导出到青龙</h2>
+      <label for="account-name">账号备注</label>
+      <input id="account-name" type="text" maxlength="60" value="账号1" autocomplete="off">
+      <div class="actions">
+        <button id="copy-cookie" type="button">复制 Cookie</button>
+        <button id="copy-json" type="button" class="primary">复制账号 JSON</button>
+      </div>
+      <p id="copy-status" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <details>
+      <summary>安全说明</summary>
+      <ul>
+        <li>扩展仅申请 <code>*.bing.com</code> 的 Cookie 读取权限。</li>
+        <li>没有后台脚本、内容脚本、远程请求或分析代码。</li>
+        <li>导出的 Cookie 可登录你的账号，请像密码一样保管。</li>
+        <li>扩展不会获取 OAuth refreshToken。</li>
+      </ul>
+    </details>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
