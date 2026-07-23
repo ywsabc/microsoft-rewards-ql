@@ -54,11 +54,21 @@ input {
   font: inherit;
 }
 
+label:not(:first-of-type) {
+  margin-top: 10px;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 10px;
+}
+
+hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid #d8e0eb;
 }
 
 button {
@@ -70,6 +80,11 @@ button {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+}
+
+.wide {
+  width: 100%;
+  margin-top: 12px;
 }
 
 button.primary {
@@ -126,6 +141,10 @@ code {
   .card {
     border-color: #374151;
     background: #1f2937;
+  }
+
+  hr {
+    border-color: #374151;
   }
 
   input,

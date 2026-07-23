@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rewards Cookie 导出</title>
+  <title>Rewards 青龙同步</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <main>
     <header>
-      <h1>Rewards Cookie 导出</h1>
-      <p>数据只在浏览器本地读取并复制，不会上传。</p>
+      <h1>Rewards 青龙同步</h1>
+      <p>Cookie、Token 和青龙密钥仅发送到你填写的青龙地址。</p>
     </header>
 
     <section class="card" aria-labelledby="status-title">
@@ -19,14 +19,32 @@
       <a href="https://rewards.bing.com/?ref=rewardspanel" target="_blank" rel="noreferrer">打开积分仪表板</a>
     </section>
 
+    <section class="card" aria-labelledby="oauth-title">
+      <h2 id="oauth-title">1. 获取 OAuth Token</h2>
+      <p>使用原脚本的 Microsoft Rewards OAuth 客户端，授权后自动捕获 refreshToken。</p>
+      <div class="actions">
+        <button id="start-oauth" type="button" class="primary">开始 OAuth 授权</button>
+        <button id="clear-oauth" type="button">清除临时 Token</button>
+      </div>
+      <p id="oauth-status" class="message" role="status" aria-live="polite">尚未获取 Token。</p>
+    </section>
+
     <section class="card" aria-labelledby="export-title">
-      <h2 id="export-title">导出到青龙</h2>
+      <h2 id="export-title">2. 导出或同步</h2>
       <label for="account-name">账号备注</label>
       <input id="account-name" type="text" maxlength="60" value="账号1" autocomplete="off">
       <div class="actions">
         <button id="copy-cookie" type="button">复制 Cookie</button>
         <button id="copy-json" type="button" class="primary">复制账号 JSON</button>
       </div>
+      <hr>
+      <label for="ql-url">青龙地址</label>
+      <input id="ql-url" type="url" autocomplete="off" placeholder="例如 http://192.168.1.2:5700">
+      <label for="ql-client-id">青龙 OpenAPI Client ID</label>
+      <input id="ql-client-id" type="text" autocomplete="off" placeholder="需要 envs 权限">
+      <label for="ql-client-secret">青龙 OpenAPI Client Secret</label>
+      <input id="ql-client-secret" type="password" autocomplete="off">
+      <button id="sync-ql" type="button" class="primary wide">同步到青龙</button>
       <p id="copy-status" class="message" role="status" aria-live="polite"></p>
     </section>
 
@@ -34,9 +52,11 @@
       <summary>安全说明</summary>
       <ul>
         <li>扩展仅申请 <code>*.bing.com</code> 的 Cookie 读取权限。</li>
-        <li>没有后台脚本、内容脚本、远程请求或分析代码。</li>
+        <li>OAuth 仅连接 <code>login.live.com</code>，同步仅连接你填写的青龙地址。</li>
+        <li>没有内容脚本、第三方统计或远程代码。</li>
         <li>导出的 Cookie 可登录你的账号，请像密码一样保管。</li>
-        <li>扩展不会获取 OAuth refreshToken。</li>
+        <li>refreshToken 仅暂存在 <code>chrome.storage.session</code>。</li>
+        <li>青龙地址及 OpenAPI 密钥不会保存。</li>
       </ul>
     </details>
   </main>

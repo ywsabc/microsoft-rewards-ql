@@ -7,7 +7,7 @@
 ## 文件
 
 - `microsoft_rewards_ql.js`：青龙版入口，Node.js 18+，无第三方运行依赖。
-- `browser-extension/`：本地导出 Rewards Cookie 的 Manifest V3 扩展。
+- `browser-extension/`：获取 Rewards Cookie/OAuth Token 并同步青龙的 Manifest V3 扩展。
 - `upstream/MicrosoftRewardsAuto-3.0.2.user.js`：抓取的原始源码，未修改。
 - `LICENSE`：MIT License，保留原作者署名。
 - `AUDIT.md`：质量审查、规格矩阵和已知技术债。
@@ -42,8 +42,8 @@
 ## 青龙配置
 
 不想手工从开发者工具复制 Cookie 时，可以使用
-[`browser-extension`](browser-extension/README.md)。扩展只在本地读取并复制配置，
-不会上传或保存 Cookie。
+[`browser-extension`](browser-extension/README.md)。扩展复用原脚本 OAuth 客户端获取
+refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址发送请求。
 
 在青龙环境变量中添加 `BING_REWARDS_ACCOUNTS`，值为 JSON 数组：
 

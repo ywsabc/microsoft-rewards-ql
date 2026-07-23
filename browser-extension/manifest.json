@@ -1,18 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Microsoft Rewards Cookie Exporter",
-  "version": "1.0.1",
-  "description": "在本地读取 rewards.bing.com 所需 Cookie，并复制为青龙配置；不会上传任何数据。",
+  "name": "Microsoft Rewards 青龙同步助手",
+  "version": "2.0.0",
+  "description": "读取 Rewards Cookie、通过用户提供的 OAuth Client ID 获取 Token，并同步到用户自己的青龙。",
   "permissions": [
     "cookies",
-    "clipboardWrite"
+    "clipboardWrite",
+    "storage"
   ],
   "host_permissions": [
     "https://bing.com/*",
-    "https://*.bing.com/*"
+    "https://*.bing.com/*",
+    "https://login.live.com/*"
   ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
-    "default_title": "导出 Microsoft Rewards Cookie",
+    "default_title": "Microsoft Rewards 青龙同步",
     "default_popup": "popup.html"
   }
 }
