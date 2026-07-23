@@ -926,14 +926,25 @@ function formatSummary(results) {
 
 async function sendQingLongNotify(message, enabled) {
     if (!enabled) return;
-    try {
-        const notify = require(path.join(__dirname, '..', 'sendNotify.js'));
-        if (notify && typeof notify.sendNotify === 'function') {
-            await notify.sendNotify(SCRIPT_NAME, message);
+    const candidates = [
+        path.join(__dirname, 'sendNotify.js'),
+        path.join(__dirname, '..', 'sendNotify.js')
+    ];
+    const errors = [];
+    for (const candidate of candidates) {
+        if (!fs.existsSync(candidate)) continue;
+        try {
+            const notify = require(candidate);
+            if (notify && typeof notify.sendNotify === 'function') {
+                await notify.sendNotify(SCRIPT_NAME, message);
+                return;
+            }
+            errors.push(candidate + ' 未导出 sendNotify');
+        } catch (error) {
+            errors.push(candidate + ': ' + error.message);
         }
-    } catch (error) {
-        console.log('[通知] sendNotify.js 调用失败: ' + error.message);
     }
+    console.log('[通知] sendNotify.js 调用失败: ' + (errors.join('; ') || '未找到通知模块'));
 }
 
 async function main() {
