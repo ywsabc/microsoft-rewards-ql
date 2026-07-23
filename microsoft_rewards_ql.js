@@ -174,6 +174,69 @@ function safeJson(text) {
     }
 }
 
+function extractEmbeddedJson(text, key, maxLength) {
+    const marker = '"' + key + '":';
+    let start = String(text || '').indexOf(marker);
+    if (start < 0) return null;
+    start += marker.length;
+    while (/\s/.test(text[start] || '')) start++;
+    const opener = text[start];
+    const closer = opener === '{' ? '}' : opener === '[' ? ']' : '';
+    if (!closer) return null;
+    const limit = Math.min(text.length, start + (maxLength || 200000));
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let index = start; index < limit; index++) {
+        const char = text[index];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quoted = false;
+            continue;
+        }
+        if (char === '"') {
+            quoted = true;
+            continue;
+        }
+        if (char === opener) depth++;
+        if (char === closer) {
+            depth--;
+            if (depth === 0) return safeJson(text.slice(start, index + 1));
+        }
+    }
+    return null;
+}
+
+function parseEarnDashboard(html) {
+    const clean = String(html || '').replace(/\\"/g, '"');
+    const points = extractEmbeddedJson(clean, 'pointsCounters', 5000);
+    const cards = extractEmbeddedJson(clean, 'activityCards', 200000);
+    const balanceMatch = clean.match(/"balance":(\d+)/)
+        || clean.match(/"availablePoints":(\d+)/);
+    if (!points && !balanceMatch) throw new Error('earn 页面未包含积分数据');
+    const pc = points && points.pc || {};
+    const balance = balanceMatch
+        ? Number(balanceMatch[1])
+        : Number(points && points.totalPoints || 0);
+    const promotions = Array.isArray(cards) ? cards : [];
+    return {
+        source: 'earn',
+        pointsCounters: points || {},
+        activityCards: promotions,
+        morePromotions: promotions,
+        userStatus: {
+            availablePoints: balance,
+            counters: {
+                pcSearch: [{
+                    pointProgress: Number(pc.progress || 0),
+                    pointProgressMax: Number(pc.max || 0)
+                }]
+            }
+        }
+    };
+}
+
 function mask(value) {
     const text = String(value || '');
     if (text.length < 12) return text ? '***' : '';
@@ -380,6 +443,10 @@ class RewardsRunner {
         this.name = account.name || '账号';
         this.jar = new CookieJar(account.cookie);
         this.http = new HttpClient(this.jar);
+        // 导出的 Cookie Header 不包含原始 Domain/Path 元数据。搜索域返回的
+        // Set-Cookie 不能写回 Rewards 会话，否则会覆盖同名的 Rewards Cookie。
+        this.searchHttp = new HttpClient(new CookieJar(account.cookie));
+        this.regionHttp = new HttpClient(null);
         this.stateStore = new StateStore(this.name, config.stateDir);
         this.state = this.stateStore.data;
         this.accessToken = '';
@@ -488,7 +555,7 @@ class RewardsRunner {
         };
     }
 
-    async getDashboard() {
+    async getUserInfoDashboard() {
         const url = 'https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest&_=' + Date.now();
         const response = await this.http.request(url, {
             headers: {
@@ -500,6 +567,42 @@ class RewardsRunner {
         const data = safeJson(response.text);
         if (!data) throw new Error('Cookie 无效或 getuserinfo 返回了登录页面');
         return data.dashboard || data;
+    }
+
+    async getEarnDashboard() {
+        const response = await this.http.request('https://rewards.bing.com/earn', {
+            headers: {
+                'user-agent': UA.pc,
+                referer: 'https://rewards.bing.com/'
+            }
+        });
+        return parseEarnDashboard(response.text);
+    }
+
+    async getDashboard() {
+        let earnError = null;
+        try {
+            const dashboard = await this.getEarnDashboard();
+            if (!this.dashboardSourceLogged) {
+                this.log('🟢', '账户状态读取成功（earn 页面）');
+                this.dashboardSourceLogged = true;
+            }
+            return dashboard;
+        } catch (error) {
+            earnError = error;
+        }
+        try {
+            const dashboard = await this.getUserInfoDashboard();
+            if (!this.dashboardSourceLogged) {
+                this.log('🟡', 'earn 页面解析失败，已使用 getuserinfo 兜底');
+                this.dashboardSourceLogged = true;
+            }
+            return dashboard;
+        } catch (error) {
+            throw new Error(
+                '账户状态读取失败：earn=' + earnError.message + '；getuserinfo=' + error.message
+            );
+        }
     }
 
     sumCounter(items) {
@@ -528,7 +631,7 @@ class RewardsRunner {
     async checkRegion() {
         if (!this.config.lockCN) return true;
         try {
-            const response = await this.http.request('https://' + this.host + '/', {
+            const response = await this.regionHttp.request('https://' + this.host + '/', {
                 headers: { 'user-agent': UA.pc }
             });
             const match = response.text.replace(/\s/g, '').match(/Region:"(.*?)"(.*?)RevIpCC:"(.*?)"/);
@@ -820,7 +923,7 @@ class RewardsRunner {
         const params = 'q=' + encodeURIComponent(query) + '&form=QBLH' + (this.config.lockCN ? '&mkt=zh-CN' : '');
         const referer = 'https://' + this.host + '/?form=QBLH';
         const cookie = '_Rwho=u=d&ts=' + dateText;
-        await this.http.request('https://' + this.host + '/search?' + params, {
+        await this.searchHttp.request('https://' + this.host + '/search?' + params, {
             headers: { 'user-agent': UA.pc, referer: referer, cookie: cookie }
         });
         const ig = crypto.randomBytes(16).toString('hex').toUpperCase();
@@ -830,11 +933,11 @@ class RewardsRunner {
             referer: referer,
             cookie: cookie
         };
-        await this.http.request(
+        await this.searchHttp.request(
             'https://' + this.host + '/rewardsapp/ncheader?ver=88888888&IID=SERP.5047&IG=' + ig + '&ajaxreq=1',
             { method: 'POST', headers: headers, body: 'wb=1%3bi%3d1%3bv%3d1' }
         );
-        await this.http.request(
+        await this.searchHttp.request(
             'https://' + this.host + '/rewardsapp/reportActivity?IG=' + ig + '&IID=SERP.5047&' + params + '&ajaxreq=1',
             {
                 method: 'POST',
@@ -1076,6 +1179,8 @@ module.exports = {
     CookieJar: CookieJar,
     HttpClient: HttpClient,
     RewardsRunner: RewardsRunner,
+    extractEmbeddedJson: extractEmbeddedJson,
+    parseEarnDashboard: parseEarnDashboard,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,

@@ -80,6 +80,37 @@ test('dry-run never refreshes OAuth', async function () {
     assert.equal(result.endBalance, 100);
 });
 
+test('Rewards, search, and region requests use isolated cookie clients', function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'isolation-test', cookie: 'WLS=rewards-session; _U=auth' },
+        {
+            tasks: new Set(),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    assert.notEqual(runner.http, runner.searchHttp);
+    assert.notEqual(runner.http.jar, runner.searchHttp.jar);
+    assert.equal(runner.regionHttp.jar, null);
+    runner.searchHttp.jar.upsert({
+        name: 'WLS',
+        value: 'search-session',
+        domain: '.bing.com',
+        path: '/',
+        secure: true,
+        expires: 0
+    });
+    assert.match(runner.http.jar.getHeader('https://rewards.bing.com/earn'), /WLS=rewards-session/);
+    assert.match(runner.searchHttp.jar.getHeader('https://cn.bing.com/'), /WLS=search-session/);
+});
+
 test('parseHotSearchResponse sanitizes and deduplicates titles', function () {
     const words = runtime.parseHotSearchResponse(JSON.stringify({
         code: 200,
@@ -133,4 +164,24 @@ test('buildConfig supports hot and local search sources', function () {
     assert.equal(runtime.buildConfig().searchSource, 'hot');
     if (previous === undefined) delete process.env.BING_REWARDS_SEARCH_SOURCE;
     else process.env.BING_REWARDS_SEARCH_SOURCE = previous;
+});
+
+test('parseEarnDashboard extracts balance, search quota, and activity cards', function () {
+    const escaped = [
+        '<script>self.__next_f.push([1,"',
+        '\\"balance\\":15534,',
+        '\\"pointsCounters\\":{\\"dailyOffer\\":3008,\\"pc\\":{\\"max\\":60,\\"progress\\":15},\\"totalPoints\\":3023},',
+        '\\"activityCards\\":[{\\"title\\":\\"每日活动\\",\\"points\\":10,\\"isCompleted\\":false,',
+        '\\"offerId\\":\\"offer-1\\",\\"hash\\":\\"hash-1\\"}]',
+        '"])</script>'
+    ].join('');
+    const dashboard = runtime.parseEarnDashboard(escaped);
+    assert.equal(dashboard.source, 'earn');
+    assert.equal(dashboard.userStatus.availablePoints, 15534);
+    assert.deepEqual(dashboard.userStatus.counters.pcSearch, [{
+        pointProgress: 15,
+        pointProgressMax: 60
+    }]);
+    assert.equal(dashboard.morePromotions.length, 1);
+    assert.equal(dashboard.morePromotions[0].offerId, 'offer-1');
 });
