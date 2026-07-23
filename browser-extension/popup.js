@@ -5,7 +5,10 @@
 
 'use strict';
 
-const REQUIRED_AUTH_COOKIES = ['_U', '.MSA.Auth', 'tifacfaatcs'];
+// tifacfaatcs was used by an older Rewards implementation, but current
+// sessions do not consistently issue it. Do not reject a signed-in account
+// merely because that legacy anti-forgery cookie is absent.
+const REQUIRED_AUTH_COOKIES = ['_U', '.MSA.Auth'];
 const elements = Object.fromEntries([
     'status', 'copy-status', 'copy-cookie', 'copy-json', 'account-name',
     'start-oauth', 'clear-oauth', 'oauth-status',
@@ -88,7 +91,7 @@ async function loadCookies() {
         }
         cookieReady = true;
         elements.status.className = 'ok';
-        elements.status.textContent = '已检测到完整登录 Cookie（共 ' + cookies.length + ' 项）。';
+        elements.status.textContent = '已检测到登录 Cookie（共 ' + cookies.length + ' 项）。';
         elements['copy-cookie'].disabled = false;
         elements['copy-json'].disabled = false;
         elements['sync-ql'].disabled = false;

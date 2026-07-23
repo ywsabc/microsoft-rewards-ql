@@ -20,8 +20,8 @@ Edge 和其他兼容的 Chromium 浏览器。
 
 1. 在浏览器登录 <https://rewards.bing.com/>；
 2. 点击扩展图标；
-3. 确认检测到 `_U`、`.MSA.Auth` 和 `tifacfaatcs`；缺少任一字段时，先打开积分
-   仪表板并完成登录；
+3. 确认检测到 `_U` 和 `.MSA.Auth`；缺少任一字段时，先打开积分仪表板并完成
+   登录；
 4. 点击“开始 OAuth 授权”，在新标签页完成 Microsoft 授权；扩展会自动捕获回调并
    兑换 `refreshToken`；
 5. 填写青龙地址及具有 `envs` 权限的 OpenAPI Client ID、Client Secret；
@@ -32,6 +32,9 @@ Edge 和其他兼容的 Chromium 浏览器。
 - `BING_REWARDS_ACCOUNTS`
 - `bing_ck_1`
 - `bing_token_1`
+
+旧版 Rewards 实现可能下发 `tifacfaatcs`，但当前登录会话不一定包含它。扩展不会再
+把该旧 Cookie 当作登录必需字段。
 
 ## 权限与隐私
 

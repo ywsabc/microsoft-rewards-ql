@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Microsoft Rewards 青龙同步助手",
-  "version": "2.0.0",
-  "description": "读取 Rewards Cookie、通过用户提供的 OAuth Client ID 获取 Token，并同步到用户自己的青龙。",
+  "version": "2.0.1",
+  "description": "读取 Rewards Cookie、通过 Microsoft Rewards OAuth 获取 Token，并同步到用户自己的青龙。",
   "permissions": [
     "cookies",
     "clipboardWrite",

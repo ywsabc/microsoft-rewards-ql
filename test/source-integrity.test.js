@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.0.0');
+    assert.equal(manifest.version, '2.0.1');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
         manifest.host_permissions.sort(),
@@ -63,9 +63,13 @@ test('browser extension restricts OAuth and stores secrets in session only', fun
     for (const pattern of forbidden) {
         assert.doesNotMatch(popupSource + '\n' + backgroundSource, pattern);
     }
-    for (const requiredCookie of ['_U', '.MSA.Auth', 'tifacfaatcs']) {
+    for (const requiredCookie of ['_U', '.MSA.Auth']) {
         assert.match(popupSource, new RegExp(requiredCookie.replace('.', '\\.')));
     }
+    assert.match(
+        popupSource,
+        /const REQUIRED_AUTH_COOKIES = \['_U', '\.MSA\.Auth'\]/
+    );
     assert.match(backgroundSource, /const CLIENT_ID = '0000000040170455'/);
     assert.match(backgroundSource, /chrome\.storage\.session/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_authorize\.srf/);
