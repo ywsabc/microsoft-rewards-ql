@@ -10,6 +10,7 @@ const copyStatusElement = document.getElementById('copy-status');
 const copyCookieButton = document.getElementById('copy-cookie');
 const copyJsonButton = document.getElementById('copy-json');
 const accountNameInput = document.getElementById('account-name');
+const REQUIRED_AUTH_COOKIES = ['_U', '.MSA.Auth', 'tifacfaatcs'];
 
 let cachedCookieHeader = '';
 
@@ -63,16 +64,23 @@ async function loadCookies() {
         // 只导出实际会发送到 Rewards 页的 Cookie，避免无关 Bing 子域 Cookie。
         const cookies = await getCookies({ url: 'https://rewards.bing.com/' });
         cachedCookieHeader = buildCookieHeader(cookies);
-        const hasAuthCookie = cookies.some(function (cookie) { return cookie.name === '_U'; });
+        const cookieNames = new Set(cookies.map(function (cookie) { return cookie.name; }));
+        const missingCookies = REQUIRED_AUTH_COOKIES.filter(function (name) {
+            return !cookieNames.has(name);
+        });
         if (!cachedCookieHeader) {
             statusElement.className = 'error';
             statusElement.textContent = '未读取到 Cookie，请先登录 Microsoft Rewards。';
             return;
         }
-        statusElement.className = hasAuthCookie ? 'ok' : 'error';
-        statusElement.textContent = hasAuthCookie
-            ? '已检测到登录 Cookie（共 ' + cookies.length + ' 项）。'
-            : '读取到 ' + cookies.length + ' 项 Cookie，但未检测到 _U；请确认已登录。';
+        if (missingCookies.length > 0) {
+            statusElement.className = 'error';
+            statusElement.textContent = 'Cookie 不完整，缺少 ' + missingCookies.join('、')
+                + '。请打开积分仪表板并完成登录后重试。';
+            return;
+        }
+        statusElement.className = 'ok';
+        statusElement.textContent = '已检测到完整登录 Cookie（共 ' + cookies.length + ' 项）。';
         copyCookieButton.disabled = false;
         copyJsonButton.disabled = false;
     } catch (error) {

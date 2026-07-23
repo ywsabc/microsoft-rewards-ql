@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Microsoft Rewards Cookie Exporter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "在本地读取 rewards.bing.com 所需 Cookie，并复制为青龙配置；不会上传任何数据。",
   "permissions": [
     "cookies",

@@ -57,4 +57,7 @@ test('browser extension contains no outbound network or persistent storage API',
     for (const pattern of forbidden) {
         assert.doesNotMatch(source, pattern);
     }
+    for (const requiredCookie of ['_U', '.MSA.Auth', 'tifacfaatcs']) {
+        assert.match(source, new RegExp(requiredCookie.replace('.', '\\.')));
+    }
 });

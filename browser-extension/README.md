@@ -20,7 +20,8 @@ Cookie 权限的支持可能不同。
 
 1. 在浏览器登录 <https://rewards.bing.com/>；
 2. 点击扩展图标；
-3. 确认检测到 `_U` 登录 Cookie；
+3. 确认检测到 `_U`、`.MSA.Auth` 和 `tifacfaatcs`；缺少任一字段时，先打开积分
+   仪表板并完成登录；
 4. 输入账号备注，点击“复制账号 JSON”；
 5. 将复制结果填入青龙环境变量 `BING_REWARDS_ACCOUNTS`。
 
