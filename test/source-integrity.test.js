@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.0.2');
+    assert.equal(manifest.version, '2.1.0');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -41,10 +41,11 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
     );
     assert.deepEqual(manifest.optional_host_permissions.sort(), ['http://*/*', 'https://*/*']);
     assert.equal(manifest.background.service_worker, 'background.js');
+    assert.equal(manifest.action.default_popup, undefined);
     assert.equal(manifest.content_scripts, undefined);
 });
 
-test('browser extension restricts OAuth and stores secrets in session only', function () {
+test('browser extension keeps account tokens in session and persists only opted-in panel settings', function () {
     const popupSource = fs.readFileSync(
         path.join(root, 'browser-extension', 'popup.js'),
         'utf8'
@@ -57,7 +58,6 @@ test('browser extension restricts OAuth and stores secrets in session only', fun
         /\bXMLHttpRequest\b/,
         /\bWebSocket\b/,
         /\bsendBeacon\b/,
-        /\bchrome\.storage\.local\b/,
         /\bchrome\.storage\.sync\b/,
         /\bbrowser\.storage\b/
     ];
@@ -73,10 +73,37 @@ test('browser extension restricts OAuth and stores secrets in session only', fun
     );
     assert.match(backgroundSource, /const CLIENT_ID = '0000000040170455'/);
     assert.match(backgroundSource, /chrome\.storage\.session/);
+    assert.doesNotMatch(backgroundSource, /chrome\.storage\.local/);
+    assert.match(backgroundSource, /chrome\.action\.onClicked/);
+    assert.match(popupSource, /chrome\.storage\.local/);
+    assert.match(
+        popupSource,
+        /const SAVED_SETTING_IDS = \[\s*'account-name',\s*'ql-url',\s*'ql-client-id',\s*'ql-client-secret'\s*\]/
+    );
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_authorize\.srf/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_token\.srf/);
     assert.match(popupSource, /chrome\.permissions\.request/);
     assert.match(popupSource, /chrome\.permissions\.remove/);
     assert.match(popupSource, /\/open\/auth\/token/);
     assert.match(popupSource, /BING_REWARDS_ACCOUNTS/);
+});
+
+test('browser extension page contains every element referenced by popup logic', function () {
+    const popupSource = fs.readFileSync(
+        path.join(root, 'browser-extension', 'popup.js'),
+        'utf8'
+    );
+    const popupHtml = fs.readFileSync(
+        path.join(root, 'browser-extension', 'popup.html'),
+        'utf8'
+    );
+    const ids = new Set(Array.from(popupHtml.matchAll(/\bid="([^"]+)"/g), function (match) {
+        return match[1];
+    }));
+    const list = popupSource.match(/const elements = Object\.fromEntries\(\[([\s\S]*?)\]\.map/);
+    assert.ok(list, 'popup element list should be discoverable');
+    const referenced = Array.from(list[1].matchAll(/'([^']+)'/g), function (match) {
+        return match[1];
+    });
+    for (const id of referenced) assert.ok(ids.has(id), 'missing popup element #' + id);
 });

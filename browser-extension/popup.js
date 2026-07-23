@@ -9,10 +9,18 @@
 // sessions do not consistently issue it. Do not reject a signed-in account
 // merely because that legacy anti-forgery cookie is absent.
 const REQUIRED_AUTH_COOKIES = ['_U', '.MSA.Auth'];
+const SAVED_SETTINGS_KEY = 'qingLongSettings';
+const SAVED_SETTING_IDS = [
+    'account-name',
+    'ql-url',
+    'ql-client-id',
+    'ql-client-secret'
+];
 const elements = Object.fromEntries([
     'status', 'copy-status', 'copy-cookie', 'copy-json', 'account-name',
     'start-oauth', 'clear-oauth', 'oauth-status',
-    'ql-url', 'ql-client-id', 'ql-client-secret', 'sync-ql'
+    'ql-url', 'ql-client-id', 'ql-client-secret', 'remember-settings',
+    'clear-settings', 'sync-ql'
 ].map(function (id) {
     return [id, document.getElementById(id)];
 }));
@@ -20,6 +28,7 @@ const elements = Object.fromEntries([
 let cachedCookieHeader = '';
 let cookieReady = false;
 let oauthPoll = null;
+let saveTimer = null;
 
 function setMessage(element, text, ok) {
     element.className = 'message ' + (ok ? 'ok' : 'error');
@@ -46,6 +55,52 @@ function sendMessage(message) {
             }
             resolve(response);
         });
+    });
+}
+
+async function restoreSettings() {
+    const data = await chrome.storage.local.get([SAVED_SETTINGS_KEY]);
+    const saved = data[SAVED_SETTINGS_KEY];
+    if (!saved || typeof saved !== 'object') return;
+    for (const id of SAVED_SETTING_IDS) {
+        if (typeof saved[id] === 'string') elements[id].value = saved[id];
+    }
+    elements['remember-settings'].checked = true;
+}
+
+async function saveSettings() {
+    if (!elements['remember-settings'].checked) {
+        await chrome.storage.local.remove([SAVED_SETTINGS_KEY]);
+        return;
+    }
+    const saved = {};
+    for (const id of SAVED_SETTING_IDS) saved[id] = elements[id].value;
+    await chrome.storage.local.set({ [SAVED_SETTINGS_KEY]: saved });
+}
+
+function scheduleSettingsSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+        saveSettings().catch(function (error) {
+            setMessage(elements['copy-status'], '保存信息失败：' + error.message, false);
+        });
+    }, 250);
+}
+
+async function restoreSyncStatus() {
+    const data = await chrome.storage.session.get(['lastSyncStatus']);
+    if (!data.lastSyncStatus) return;
+    setMessage(
+        elements['copy-status'],
+        data.lastSyncStatus.text,
+        Boolean(data.lastSyncStatus.ok)
+    );
+}
+
+async function recordSyncStatus(text, ok) {
+    setMessage(elements['copy-status'], text, ok);
+    await chrome.storage.session.set({
+        lastSyncStatus: { text: text, ok: Boolean(ok), time: Date.now() }
     });
 }
 
@@ -195,20 +250,23 @@ async function syncToQingLong() {
     const clientId = elements['ql-client-id'].value.trim();
     const clientSecret = elements['ql-client-secret'].value;
     if (!clientId || !clientSecret) throw new Error('请填写青龙 OpenAPI Client ID 和 Secret');
-    // permissions.request 必须直接源自用户点击，放在其他异步操作之前。
+    const pendingText = '正在申请青龙地址权限并开始同步…';
+    setMessage(elements['copy-status'], pendingText, true);
+    chrome.storage.session.set({
+        lastSyncStatus: { text: pendingText, ok: true, time: Date.now() }
+    }).catch(function () {});
+    // 固定标签页不会像 action 弹窗一样在权限确认时被销毁。
+    // permissions.request 保持为本次点击后的第一个异步等待。
     await requestOriginPermission(origin);
-    try {
-        const accounts = await getAccountConfig(true);
-        const query = new URLSearchParams({ client_id: clientId, client_secret: clientSecret });
-        const tokenData = await qlRequest(origin, '/open/auth/token?' + query.toString(), '');
-        const apiToken = tokenData.token;
-        await upsertEnv(origin, apiToken, 'BING_REWARDS_ACCOUNTS', JSON.stringify(accounts), '由浏览器扩展同步');
-        await upsertEnv(origin, apiToken, 'bing_ck_1', accounts[0].cookie, '由浏览器扩展同步');
-        await upsertEnv(origin, apiToken, 'bing_token_1', accounts[0].refreshToken, '由浏览器扩展同步');
-        setMessage(elements['copy-status'], '已同步 BING_REWARDS_ACCOUNTS、bing_ck_1、bing_token_1。', true);
-    } finally {
-        await removeOriginPermission(origin);
-    }
+    await saveSettings();
+    const accounts = await getAccountConfig(true);
+    const query = new URLSearchParams({ client_id: clientId, client_secret: clientSecret });
+    const tokenData = await qlRequest(origin, '/open/auth/token?' + query.toString(), '');
+    const apiToken = tokenData.token;
+    await upsertEnv(origin, apiToken, 'BING_REWARDS_ACCOUNTS', JSON.stringify(accounts), '由浏览器扩展同步');
+    await upsertEnv(origin, apiToken, 'bing_ck_1', accounts[0].cookie, '由浏览器扩展同步');
+    await upsertEnv(origin, apiToken, 'bing_token_1', accounts[0].refreshToken, '由浏览器扩展同步');
+    await recordSyncStatus('同步成功：账号 JSON、Cookie 和 Token 均已写入青龙。', true);
 }
 
 elements['copy-cookie'].addEventListener('click', function () {
@@ -241,14 +299,42 @@ elements['clear-oauth'].addEventListener('click', function () {
     });
 });
 
+for (const id of SAVED_SETTING_IDS) {
+    elements[id].addEventListener('input', scheduleSettingsSave);
+}
+
+elements['remember-settings'].addEventListener('change', function () {
+    saveSettings().catch(function (error) {
+        setMessage(elements['copy-status'], '保存设置失败：' + error.message, false);
+    });
+});
+
+elements['clear-settings'].addEventListener('click', function () {
+    const savedOrigin = elements['ql-url'].value;
+    chrome.storage.local.remove([SAVED_SETTINGS_KEY]).then(async function () {
+        try {
+            if (savedOrigin) await removeOriginPermission(normalizePanelUrl(savedOrigin));
+        } catch (_) {}
+        for (const id of SAVED_SETTING_IDS) elements[id].value = id === 'account-name' ? '账号1' : '';
+        elements['remember-settings'].checked = false;
+        await recordSyncStatus('已清除保存的青龙连接信息。', true);
+    }).catch(function (error) {
+        setMessage(elements['copy-status'], '清除失败：' + error.message, false);
+    });
+});
+
 elements['sync-ql'].addEventListener('click', function () {
     elements['sync-ql'].disabled = true;
     syncToQingLong().catch(function (error) {
-        setMessage(elements['copy-status'], '同步失败：' + error.message, false);
+        recordSyncStatus('同步失败：' + error.message, false).catch(function () {});
     }).finally(function () {
         elements['sync-ql'].disabled = !cookieReady;
     });
 });
 
+restoreSettings().catch(function (error) {
+    setMessage(elements['copy-status'], '读取保存信息失败：' + error.message, false);
+});
+restoreSyncStatus().catch(function () {});
 loadCookies();
 updateOAuthStatus();

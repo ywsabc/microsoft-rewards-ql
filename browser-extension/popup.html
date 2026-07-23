@@ -10,7 +10,7 @@
   <main>
     <header>
       <h1>Rewards 青龙同步</h1>
-      <p>Cookie、Token 和青龙密钥仅发送到你填写的青龙地址。</p>
+      <p>这是固定标签页，OAuth 跳转和权限确认不会再关闭本界面。</p>
     </header>
 
     <section class="card" aria-labelledby="status-title">
@@ -44,7 +44,15 @@
       <input id="ql-client-id" type="text" autocomplete="off" placeholder="需要 envs 权限">
       <label for="ql-client-secret">青龙 OpenAPI Client Secret</label>
       <input id="ql-client-secret" type="password" autocomplete="off">
-      <button id="sync-ql" type="button" class="primary wide">同步到青龙</button>
+      <label class="checkbox-row" for="remember-settings">
+        <input id="remember-settings" type="checkbox" checked>
+        保存账号备注和青龙连接信息
+      </label>
+      <p class="hint">勾选后，青龙地址、Client ID 和 Secret 会保存在本机浏览器扩展存储中。</p>
+      <div class="actions">
+        <button id="clear-settings" type="button">清除保存信息</button>
+        <button id="sync-ql" type="button" class="primary">保存并同步到青龙</button>
+      </div>
       <p id="copy-status" class="message" role="status" aria-live="polite"></p>
     </section>
 
@@ -55,8 +63,11 @@
         <li>OAuth 仅连接 <code>login.live.com</code>，同步仅连接你填写的青龙地址。</li>
         <li>没有内容脚本、第三方统计或远程代码。</li>
         <li>导出的 Cookie 可登录你的账号，请像密码一样保管。</li>
-        <li>refreshToken 仅暂存在 <code>chrome.storage.session</code>。</li>
-        <li>青龙地址及 OpenAPI 密钥不会保存。</li>
+        <li>Cookie 只保留在当前页面内存；refreshToken 仅暂存在
+          <code>chrome.storage.session</code>，都不会长期保存。</li>
+        <li>勾选保存后，青龙地址、OpenAPI Client ID 和 Secret 保存在
+          <code>chrome.storage.local</code>，不会发送到其他服务器。</li>
+        <li>点击“清除保存信息”会删除连接信息并撤销对应青龙地址权限。</li>
       </ul>
     </details>
   </main>

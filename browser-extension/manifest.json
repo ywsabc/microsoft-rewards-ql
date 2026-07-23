@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Microsoft Rewards 青龙同步助手",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "读取 Rewards Cookie、通过 Microsoft Rewards OAuth 获取 Token，并同步到用户自己的青龙。",
   "minimum_chrome_version": "102",
   "permissions": [
@@ -22,7 +22,6 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Microsoft Rewards 青龙同步",
-    "default_popup": "popup.html"
+    "default_title": "打开 Microsoft Rewards 青龙同步"
   }
 }

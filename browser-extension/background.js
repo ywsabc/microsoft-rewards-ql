@@ -10,6 +10,7 @@ const TOKEN_URL = 'https://login.live.com/oauth20_token.srf';
 const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
 const REWARDS_SCOPE = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL';
 const CLIENT_ID = '0000000040170455';
+const DASHBOARD_PAGE = 'popup.html';
 const SESSION_KEYS = [
     'oauthState',
     'oauthTabId',
@@ -17,6 +18,34 @@ const SESSION_KEYS = [
     'oauthError',
     'refreshToken'
 ];
+
+async function openDashboard() {
+    const pageUrl = chrome.runtime.getURL(DASHBOARD_PAGE);
+    const saved = await chrome.storage.session.get(['dashboardTabId']);
+    if (saved.dashboardTabId) {
+        try {
+            await chrome.tabs.update(saved.dashboardTabId, { active: true });
+            return;
+        } catch (_) {
+            await chrome.storage.session.remove(['dashboardTabId']);
+        }
+    }
+    const tab = await chrome.tabs.create({ url: pageUrl, active: true });
+    await chrome.storage.session.set({ dashboardTabId: tab.id });
+}
+
+chrome.action.onClicked.addListener(function () {
+    openDashboard().catch(function (error) {
+        console.error('打开同步页面失败:', error);
+    });
+});
+
+chrome.tabs.onRemoved.addListener(async function (tabId) {
+    const saved = await chrome.storage.session.get(['dashboardTabId']);
+    if (saved.dashboardTabId === tabId) {
+        await chrome.storage.session.remove(['dashboardTabId']);
+    }
+});
 
 function randomState() {
     const bytes = crypto.getRandomValues(new Uint8Array(24));
