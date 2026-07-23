@@ -8,10 +8,12 @@
 
 Chrome、Edge 或其他 Chromium 浏览器：
 
-1. 打开扩展管理页面；
-2. 开启“开发者模式”；
+1. 先解压 ZIP，浏览器不能直接加载 ZIP；
+2. 打开扩展管理页面并开启“开发者模式”；
 3. 点击“加载已解压的扩展程序”；
-4. 选择本 `browser-extension` 文件夹。
+4. 选择解压后**直接包含 `manifest.json`** 的目录。
+
+从 v2.0.2 开始，发布包根目录直接包含 `manifest.json`，不再额外嵌套一层同名文件夹。
 
 当前版本使用 Chromium 的 `chrome.storage.session` 与运行时主机授权，支持 Chrome、
 Edge 和其他兼容的 Chromium 浏览器。

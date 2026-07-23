@@ -1,6 +1,6 @@
 {
   "name": "microsoft-rewards-ql",
-  "version": "3.0.2-ql.2",
+  "version": "3.0.2-ql.3",
   "private": true,
   "description": "Microsoft Rewards v3.0.2 refactored for QingLong",
   "license": "MIT",

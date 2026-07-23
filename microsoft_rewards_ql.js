@@ -54,6 +54,19 @@ const SEARCH_POOL = [
     'science facts about the ocean'
 ];
 
+const HOT_SEARCH_PROVIDERS = [
+    {
+        name: 'hot.nntool.cc',
+        baseUrl: 'https://hotapi.nntool.cc/',
+        sources: ['weibo', 'douyin', 'baidu', 'toutiao', 'thepaper', 'qq-news', 'netease-news', 'zhihu']
+    },
+    {
+        name: 'cnxiaobai.com',
+        baseUrl: 'https://cnxiaobai.com/DailyHotApi/',
+        sources: ['weibo', 'douyin', 'baidu', 'toutiao', 'thepaper', 'qq-news', 'netease-news', 'zhihu']
+    }
+];
+
 const SKIP_PATTERNS = [
     'referral', 'refer and earn', 'sweepstake', 'entries', 'install the',
     'set bing as your default', 'bing wallpaper', 'punch card',
@@ -84,6 +97,62 @@ function randomInt(min, max) {
 
 function randomHex64() {
     return crypto.randomBytes(32).toString('hex').toUpperCase();
+}
+
+function shuffled(values) {
+    const result = values.slice();
+    for (let index = result.length - 1; index > 0; index--) {
+        const swapIndex = randomInt(0, index);
+        [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+    }
+    return result;
+}
+
+function parseHotSearchResponse(text) {
+    const payload = safeJson(text);
+    if (!payload || Number(payload.code) !== 200 || !Array.isArray(payload.data)) {
+        throw new Error('响应结构不符合预期');
+    }
+    const seen = new Set();
+    const words = [];
+    for (const item of payload.data) {
+        const title = String(item && item.title || '')
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 64);
+        if (title.length < 2 || /^https?:\/\//i.test(title) || seen.has(title)) continue;
+        seen.add(title);
+        words.push(title);
+    }
+    if (words.length < 5) throw new Error('有效热搜词少于 5 条');
+    return words;
+}
+
+async function loadHotSearchWords(client, providers) {
+    const providerList = providers ? providers.slice() : shuffled(HOT_SEARCH_PROVIDERS);
+    const errors = [];
+    for (const provider of providerList) {
+        const sources = shuffled(provider.sources);
+        const source = sources[0];
+        const url = provider.baseUrl + source;
+        try {
+            const response = await client.request(url, {
+                timeout: 12000,
+                redirects: 2,
+                headers: { accept: 'application/json' }
+            });
+            if (response.text.length > 1024 * 1024) throw new Error('响应超过 1 MiB');
+            return {
+                provider: provider.name,
+                source: source,
+                words: shuffled(parseHotSearchResponse(response.text))
+            };
+        } catch (error) {
+            errors.push(provider.name + ': ' + error.message);
+        }
+    }
+    throw new Error(errors.join('; ') || '没有可用热搜源');
 }
 
 function todayKeys() {
@@ -775,6 +844,20 @@ class RewardsRunner {
         );
     }
 
+    async getSearchQueries(count) {
+        if (this.config.searchSource !== 'local') {
+            try {
+                // 独立客户端不带 Microsoft Cookie、OAuth Token 或账号状态。
+                const hot = await loadHotSearchWords(new HttpClient(null));
+                this.log('📰', '热搜词来源 ' + hot.provider + '/' + hot.source + '，获取 ' + hot.words.length + ' 条');
+                return hot.words.slice(0, count);
+            } catch (error) {
+                this.log('🟡', '热搜接口不可用，回退本地词库: ' + error.message);
+            }
+        }
+        return shuffled(SEARCH_POOL).slice(0, count);
+    }
+
     async runSearch() {
         if (!this.config.tasks.has('search')) return;
         try {
@@ -788,11 +871,12 @@ class RewardsRunner {
                 this.result.search = info.pc.progress + '/' + info.pc.max;
                 return;
             }
-            for (let i = 0; i < this.config.searchCount; i++) {
-                const query = SEARCH_POOL[randomInt(0, SEARCH_POOL.length - 1)] + ' ' + randomInt(100, 999);
-                this.log('🔍', '搜索 ' + (i + 1) + '/' + this.config.searchCount + ': ' + query);
+            const queries = await this.getSearchQueries(this.config.searchCount);
+            for (let i = 0; i < queries.length; i++) {
+                const query = queries[i];
+                this.log('🔍', '搜索 ' + (i + 1) + '/' + queries.length + ': ' + query);
                 await this.searchOnce(query);
-                if (i + 1 < this.config.searchCount) {
+                if (i + 1 < queries.length) {
                     await this.delay(
                         Math.max(1000, (this.config.searchInterval - 15) * 1000),
                         (this.config.searchInterval + 15) * 1000
@@ -895,6 +979,10 @@ function parseAccounts() {
 
 function buildConfig() {
     const taskText = process.env.BING_REWARDS_TASKS || 'sign,read,promos,quiz,search,streak';
+    const searchSourceValue = String(process.env.BING_REWARDS_SEARCH_SOURCE || 'hot').trim().toLowerCase();
+    if (!['hot', 'auto', 'local', 'offline'].includes(searchSourceValue)) {
+        throw new Error('BING_REWARDS_SEARCH_SOURCE 仅支持 hot/auto/local/offline');
+    }
     return {
         tasks: new Set(taskText.split(',').map(function (item) { return item.trim().toLowerCase(); }).filter(Boolean)),
         lockCN: boolEnv('BING_REWARDS_LOCK_CN', true),
@@ -903,6 +991,7 @@ function buildConfig() {
         delayScale: numberEnv('BING_REWARDS_DELAY_SCALE', 1, 0, 10),
         searchInterval: numberEnv('BING_REWARDS_SEARCH_INTERVAL', 30, 15, 600),
         searchCount: numberEnv('BING_REWARDS_SEARCH_COUNT', 6, 1, 30),
+        searchSource: ['local', 'offline'].includes(searchSourceValue) ? 'local' : 'hot',
         maxPromos: numberEnv('BING_REWARDS_MAX_PROMOS', 20, 0, 100),
         stateDir: process.env.BING_REWARDS_STATE_DIR || DEFAULT_STATE_DIR
     };
@@ -987,6 +1076,8 @@ module.exports = {
     CookieJar: CookieJar,
     HttpClient: HttpClient,
     RewardsRunner: RewardsRunner,
+    parseHotSearchResponse: parseHotSearchResponse,
+    loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,
     buildConfig: buildConfig
 };

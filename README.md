@@ -90,6 +90,7 @@ BING_REWARDS_AUTH_CODE
 | `BING_REWARDS_NOTIFY` | `1` | 是否调用根目录 `sendNotify.js` |
 | `BING_REWARDS_SEARCH_INTERVAL` | `30` | 搜索基础间隔秒数，实际加入 ±15 秒随机量 |
 | `BING_REWARDS_SEARCH_COUNT` | `6` | 每轮最多搜索次数 |
+| `BING_REWARDS_SEARCH_SOURCE` | `hot` | `hot/auto` 使用热搜多源并失败回退；`local/offline` 只用本地词库 |
 | `BING_REWARDS_MAX_PROMOS` | `20` | 每轮最多处理活动卡片数 |
 | `BING_REWARDS_DELAY_SCALE` | `1` | 随机等待倍率；生产环境建议保持 `1` |
 | `BING_REWARDS_STATE_DIR` | 当前目录下 `.state` | 令牌状态目录 |
@@ -142,7 +143,11 @@ npm test
 - `.state` 含刷新令牌，已加入 `.gitignore`，仍应限制青龙主机与备份文件的访问权限。
 - `.state` 中成功续期的令牌优先于环境变量；如需强制更换账号令牌，请删除对应账号的
   `.state/账号.json` 后再运行。
-- 原脚本连接的第三方热搜服务没有迁入青龙版；搜索词默认使用本地词库。
+- 热搜模式会在每个账号开始搜索前随机选择一个榜单，优先使用
+  `hotapi.nntool.cc` 或 `cnxiaobai.com/DailyHotApi`，失败时自动切换提供方，全部失败
+  才回退本地词库。热搜请求使用独立的无 Cookie HTTP 客户端，不会携带 Microsoft
+  Cookie、OAuth Token 或青龙密钥；第三方仍能看到青龙主机的出口 IP 和请求时间。
+- 使用热搜词只能减少固定、重复搜索词，不能保证避免 Microsoft Rewards 风控。
 
 ## 许可证与来源
 
