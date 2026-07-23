@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+/**
+ * name: 微软积分商城签到（青龙重构版）
+ * cron: 7,27,47 * * * *
+ */
 /*
  * Microsoft Rewards for QingLong
  *

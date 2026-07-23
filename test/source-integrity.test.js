@@ -8,6 +8,15 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
+test('main script exposes QingLong auto-task metadata', function () {
+    const source = fs.readFileSync(
+        path.join(root, 'microsoft_rewards_ql.js'),
+        'utf8'
+    );
+    assert.match(source, /^\s*\*\s+name:\s+微软积分商城签到（青龙重构版）\s*$/m);
+    assert.match(source, /^\s*\*\s+cron:\s+7,27,47 \* \* \* \*\s*$/m);
+});
+
 test('upstream v3.0.2 source retains its published checksum', function () {
     const source = fs.readFileSync(
         path.join(root, 'upstream', 'MicrosoftRewardsAuto-3.0.2.user.js')

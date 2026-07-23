@@ -98,10 +98,21 @@ BING_REWARDS_AUTH_CODE
 
 ## 青龙任务
 
-脚本无需执行 `npm install`。添加定时任务：
+脚本无需执行 `npm install`。在青龙面板的“订阅管理”中新增订阅，或在青龙终端执行：
 
 ```sh
-task MicrosoftRewardsQL/microsoft_rewards_ql.js
+ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_ql[.]js$' "" "" "main" "js" "" "true" "true"
+```
+
+该命令只拉取主脚本，并让青龙根据脚本内的 `name` 和 `cron` 元数据自动添加或更新
+“微软积分商城签到（青龙重构版）”任务。默认在每小时的第 7、27、47 分钟执行，即每
+20 分钟一次。若面板全局配置关闭了自动添加任务，请在“配置文件”中设置
+`AutoAddCron="true"`。
+
+手动执行命令为：
+
+```sh
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_ql.js
 ```
 
 建议先临时设置：
@@ -110,11 +121,11 @@ task MicrosoftRewardsQL/microsoft_rewards_ql.js
 BING_REWARDS_DRY_RUN=1
 ```
 
-确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。推荐每 20～30 分钟运行一次，
+确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。默认每 20 分钟运行一次，
 每轮只执行少量搜索，避免高频请求：
 
 ```cron
-*/20 * * * *
+7,27,47 * * * *
 ```
 
 本地/青龙 Node.js 验证：
