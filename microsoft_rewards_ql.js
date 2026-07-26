@@ -482,6 +482,7 @@ class RewardsRunner {
         // 使用 www.bing.com 并通过 mkt 锁定中文市场，与上游浏览器脚本一致。
         this.host = 'www.bing.com';
         this.searchSessionSynced = false;
+        this.submittedPromoIds = new Set();
         this.logs = [];
         this.result = {
             name: this.name,
@@ -930,6 +931,14 @@ class RewardsRunner {
                 const activity = await this.reportDailyActivity(target.toString());
                 const points = activity.increment === null ? '已接受' : '+' + activity.increment;
                 this.log('🟢', '每日卡片上报' + points);
+                if (activity.increment !== null && activity.increment < card.points) {
+                    this.log(
+                        '🟡',
+                        '活动接口仅返回 +' + activity.increment
+                            + '，低于卡片标注 +' + card.points
+                            + '，必须以仪表板状态为准'
+                    );
+                }
                 return true;
             }
         } catch (bingError) {
@@ -1018,13 +1027,31 @@ class RewardsRunner {
                 this.result.promos = 'dry-run ' + cards.length + ' 个';
                 return;
             }
+            if (secondPass && this.submittedPromoIds.size > 0) {
+                const pendingIds = new Set(cards.map(function (item) {
+                    return item.offerId;
+                }));
+                const confirmed = Array.from(this.submittedPromoIds).filter(function (offerId) {
+                    return !pendingIds.has(offerId);
+                }).length;
+                this.result.promos += '，二扫确认 '
+                    + confirmed + '/' + this.submittedPromoIds.size;
+                if (confirmed < this.submittedPromoIds.size) {
+                    this.result.promos += '（仍未完成 '
+                        + (this.submittedPromoIds.size - confirmed) + '）';
+                }
+                return;
+            }
             let ok = 0;
             const limited = cards.slice(0, this.config.maxPromos);
             const submitted = [];
             for (const card of limited) {
                 this.log('🧩', '[' + card.kind + '] ' + (card.title || card.offerId) + ' +' + card.points);
                 await this.delay(3000, 8000);
-                if (await this.claimCard(card)) submitted.push(card);
+                if (await this.claimCard(card)) {
+                    submitted.push(card);
+                    this.submittedPromoIds.add(card.offerId);
+                }
             }
             if (submitted.length > 0) {
                 // Rewards 卡片状态存在服务端同步延迟；集中等待后再验证，
@@ -1042,7 +1069,7 @@ class RewardsRunner {
                         '🟡',
                         '卡片已提交 ' + submitted.length
                             + ' 个，已确认 ' + ok
-                            + ' 个，其余等待 Rewards 同步'
+                            + ' 个，其余未获 Rewards 确认'
                     );
                 }
             }
@@ -1054,7 +1081,7 @@ class RewardsRunner {
             } else {
                 this.result.promos = ok + '/' + limited.length;
                 if (ok < submitted.length) {
-                    this.result.promos += '（已提交，待同步 '
+                    this.result.promos += '（上报未确认 '
                         + (submitted.length - ok) + '）';
                 }
             }
