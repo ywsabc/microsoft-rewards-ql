@@ -8,15 +8,51 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
-test('main script exposes QingLong auto-task metadata', function () {
+test('main script stays unscheduled and exposes the shared runtime', function () {
     const source = fs.readFileSync(
         path.join(root, 'microsoft_rewards_ql.js'),
         'utf8'
     );
-    assert.match(source, /^\s*\*\s+name:\s+微软积分商城签到（青龙重构版）\s*$/m);
-    assert.match(source, /^\s*\*\s+cron:\s+17 9 \* \* \*\s*$/m);
+    assert.doesNotMatch(source, /^\s*\*\s+cron:/m);
+    assert.match(source, /main:\s*main/);
     assert.match(source, /path\.join\(__dirname, 'sendNotify\.js'\)/);
     assert.match(source, /path\.join\(__dirname, '\.\.', 'sendNotify\.js'\)/);
+});
+
+test('split QingLong entry files expose independent schedules and modules', function () {
+    const expected = {
+        sign: { name: '微软积分-01签到', cron: '7 9 * * *', tasks: 'sign' },
+        read: { name: '微软积分-02阅读', cron: '23 9 * * *', tasks: 'read' },
+        promos: { name: '微软积分-03活动', cron: '11 10 * * *', tasks: 'promos,quiz' },
+        search: { name: '微软积分-04电脑搜索', cron: '47 10 * * *', tasks: 'search' },
+        mobile: { name: '微软积分-05移动搜索', cron: '29 11 * * *', tasks: 'mobile' },
+        streak: { name: '微软积分-06连签', cron: '43 11 * * *', tasks: 'streak' },
+        claim: { name: '微软积分-07领取', cron: '7 12 * * *', tasks: 'claim' }
+    };
+    for (const [moduleName, metadata] of Object.entries(expected)) {
+        const source = fs.readFileSync(
+            path.join(root, 'microsoft_rewards_task_' + moduleName + '.js'),
+            'utf8'
+        );
+        assert.match(source, new RegExp(
+            '^\\s*\\*\\s+name:\\s+' + metadata.name + '\\s*$',
+            'm'
+        ));
+        assert.match(source, new RegExp(
+            '^\\s*\\*\\s+cron:\\s+'
+                + metadata.cron.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                + '\\s*$',
+            'm'
+        ));
+        assert.match(
+            source,
+            new RegExp(
+                "process\\.env\\.BING_REWARDS_TASKS = '"
+                    + metadata.tasks + "'"
+            )
+        );
+        assert.match(source, /require\('\.\/microsoft_rewards_ql'\)\.main\(\)/);
+    }
 });
 
 test('upstream v3.0.2 source retains its published checksum', function () {

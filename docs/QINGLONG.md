@@ -8,7 +8,7 @@
 推荐在青龙“终端”中执行：
 
 ```sh
-ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_ql[.]js$' "" "" "main" "js" "" "true" "true"
+ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_(ql|task_[a-z_]+)[.]js$' "" "" "main" "js" "" "true" "true"
 ```
 
 仓库地址：
@@ -17,44 +17,54 @@ ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards
 https://github.com/ywsabc/microsoft-rewards-ql.git
 ```
 
-主脚本单文件地址：
+共享核心单文件地址：
 
 ```text
 https://raw.githubusercontent.com/ywsabc/microsoft-rewards-ql/refs/heads/main/microsoft_rewards_ql.js
 ```
 
-命令最后两个 `true` 用于自动添加和更新定时任务。脚本头部已经包含：
-
-```text
-name: 微软积分商城签到（青龙重构版）
-cron: 17 9 * * *
-```
-
-拉取完成后，青龙会自动创建或更新“微软积分商城签到（青龙重构版）”。如果没有自动
-创建，请在青龙配置文件中确认：
+命令中的白名单同时拉取共享核心与所有 `microsoft_rewards_task_*.js` 入口；最后
+两个 `true` 用于自动添加和更新定时任务。拉取完成后，青龙会自动创建或更新 7 个
+独立任务。如果没有自动创建，请在青龙配置文件中确认：
 
 ```text
 AutoAddCron="true"
 ```
 
-也可以在“订阅管理”中新建单文件订阅，填写上面的主脚本单文件地址，并勾选“自动添加
-任务”和“自动删除任务”。建议把源码更新订阅设为每天 04:23 执行一次：
+也可以在“订阅管理”中新建 Git 仓库订阅，仓库地址填写：
+
+```text
+https://github.com/ywsabc/microsoft-rewards-ql.git
+```
+
+文件白名单填写：
+
+```text
+^microsoft_rewards_(ql|task_[a-z_]+)[.]js$
+```
+
+勾选“自动添加任务”和“自动删除任务”。建议把源码更新订阅设为每天 04:23
+执行一次：
 
 ```cron
 23 4 * * *
 ```
 
-## 2. 默认定时时间
+## 2. 默认子任务与定时时间
 
-主任务默认每天执行一次：
+| 青龙任务 | 模块 | Cron |
+| --- | --- | --- |
+| 微软积分-01签到 | `sign` | `7 9 * * *` |
+| 微软积分-02阅读 | `read` | `23 9 * * *` |
+| 微软积分-03活动 | `promos,quiz` | `11 10 * * *` |
+| 微软积分-04电脑搜索 | `search` | `47 10 * * *` |
+| 微软积分-05移动搜索 | `mobile` | `29 11 * * *` |
+| 微软积分-06连签 | `streak` | `43 11 * * *` |
+| 微软积分-07领取 | `claim` | `7 12 * * *` |
 
-```cron
-17 9 * * *
-```
-
-即按青龙容器时区每天 09:17 执行。中国大陆用户应确认青龙时区为
-`Asia/Shanghai`。不建议设置成每几分钟或每小时反复执行；脚本内部已经包含搜索间隔、
-活动重试冷却和最终状态复核。
+以上时间均按青龙容器时区计算，中国大陆用户应确认青龙时区为
+`Asia/Shanghai`。子任务之间至少错开 14 分钟，搜索任务间隔 42 分钟，避免并发或
+短时间集中请求。不建议改成每几分钟或每小时重复执行。
 
 ## 3. 配置账号
 
@@ -88,16 +98,22 @@ Cookie 和 refreshToken 等同账号密码，不要写入脚本、GitHub Issue �
 BING_REWARDS_DRY_RUN=1
 ```
 
-然后手动执行自动创建的任务。仓库拉取方式对应的命令通常是：
+然后逐个手动执行自动创建的子任务。仓库拉取方式对应的命令例如：
+
+```sh
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_sign.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_read.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_promos.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_search.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_mobile.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_streak.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_claim.js
+```
+
+共享核心仍可用于一次性手动执行全部模块，但不会自动创建总任务：
 
 ```sh
 task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_ql.js
-```
-
-单文件订阅对应的命令通常是：
-
-```sh
-task raw_main_microsoft_rewards_ql.js
 ```
 
 确认日志能分别读取每个账号的余额、搜索进度、活动和连签状态后，把变量改为：
@@ -138,19 +154,20 @@ BING_REWARDS_TASKS=sign,read,claim
 BING_REWARDS_MOBILE_SEARCH_COUNT=3
 ```
 
-不建议为了跑满配额而提高频率或反复手动执行；默认主任务每天只运行一次。
+不建议为了跑满配额而提高频率或反复手动执行；每个子任务默认每天只运行一次。
 
 ## 6. 更新脚本
 
-手动运行原来的仓库拉取或单文件订阅即可更新。开启自动添加任务后，脚本中的名称和
-Cron 元数据也会同步到现有任务。
+手动运行原来的仓库拉取或 Git 订阅即可更新。开启自动添加任务后，7 个入口脚本中的
+名称和 Cron 元数据也会同步到现有任务。
 
 更新后建议先把 `BING_REWARDS_DRY_RUN` 临时改为 `1`，手动运行一次确认日志，再恢复
 为 `0`。
 
 ## 7. 常见检查
 
-- 没有自动创建任务：检查 `AutoAddCron="true"` 以及订阅的自动添加任务开关。
+- 没有自动创建 7 个任务：确认使用了本教程的新白名单，检查
+  `AutoAddCron="true"` 以及订阅的自动添加任务开关。
 - 显示 Cookie 无效：重新在 Rewards 页面登录并用扩展同步对应账号。
 - 阅读显示无 Token：重新获取该账号 OAuth Token，确认备注没有与其他账号重复。
 - 搜索不入账：确认扩展同时同步了 Rewards Cookie 和 Bing 搜索 Cookie。

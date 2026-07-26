@@ -6,7 +6,8 @@
 
 ## 文件
 
-- `microsoft_rewards_ql.js`：青龙版入口，Node.js 18+，无第三方运行依赖。
+- `microsoft_rewards_ql.js`：青龙共享运行核心，Node.js 18+，无第三方运行依赖。
+- `microsoft_rewards_task_*.js`：7 个独立青龙定时任务入口。
 - `browser-extension/`：管理多个 Rewards 账号的 Cookie/OAuth Token 并统一同步青龙的
   Manifest V3 扩展。
 - `upstream/MicrosoftRewardsAuto-3.0.2.user.js`：抓取的原始源码，未修改。
@@ -111,17 +112,18 @@ BING_REWARDS_AUTH_CODE
 在青龙终端执行：
 
 ```sh
-ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_ql[.]js$' "" "" "main" "js" "" "true" "true"
+ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_(ql|task_[a-z_]+)[.]js$' "" "" "main" "js" "" "true" "true"
 ```
 
-该命令只拉取主脚本，并让青龙根据脚本内的 `name` 和 `cron` 元数据自动添加或更新
-“微软积分商城签到（青龙重构版）”任务。若面板全局配置关闭了自动添加任务，请在
-“配置文件”中设置 `AutoAddCron="true"`。
+该命令会拉取共享核心和 7 个入口脚本，并根据每个入口的 `name`、`cron` 自动添加或
+更新签到、阅读、活动、电脑搜索、移动搜索、连签和领取任务。若面板全局配置关闭了
+自动添加任务，请在“配置文件”中设置 `AutoAddCron="true"`。
 
-手动执行命令为：
+例如手动执行签到和移动搜索：
 
 ```sh
-task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_ql.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_sign.js
+task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_mobile.js
 ```
 
 建议先临时设置：
@@ -130,12 +132,8 @@ task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_ql.js
 BING_REWARDS_DRY_RUN=1
 ```
 
-确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。默认按青龙时区每天
-09:17 运行一次：
-
-```cron
-17 9 * * *
-```
+确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。7 个任务默认在
+09:07 至 12:07 之间错峰执行，具体时间见教程。
 
 本地/青龙 Node.js 验证：
 

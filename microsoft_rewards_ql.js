@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * name: 微软积分商城签到（青龙重构版）
- * cron: 17 9 * * *
+ * Microsoft Rewards QingLong shared runtime.
+ * Run the scheduled microsoft_rewards_task_*.js entry files.
  */
 /*
  * Microsoft Rewards for QingLong
@@ -1839,5 +1839,6 @@ module.exports = {
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,
-    buildConfig: buildConfig
+    buildConfig: buildConfig,
+    main: main
 };
