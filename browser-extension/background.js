@@ -16,22 +16,34 @@ const SESSION_KEYS = [
     'oauthTabId',
     'oauthStatus',
     'oauthError',
-    'refreshToken'
+    'refreshToken',
+    'oauthCookieFingerprint'
 ];
 
 async function openDashboard() {
     const pageUrl = chrome.runtime.getURL(DASHBOARD_PAGE);
-    const saved = await chrome.storage.session.get(['dashboardTabId']);
-    if (saved.dashboardTabId) {
+    const saved = await chrome.storage.session.get(['dashboardWindowId']);
+    if (saved.dashboardWindowId) {
         try {
-            await chrome.tabs.update(saved.dashboardTabId, { active: true });
+            await chrome.windows.get(saved.dashboardWindowId);
+            await chrome.windows.update(saved.dashboardWindowId, {
+                focused: true,
+                state: 'normal'
+            });
             return;
         } catch (_) {
-            await chrome.storage.session.remove(['dashboardTabId']);
+            await chrome.storage.session.remove(['dashboardWindowId']);
         }
     }
-    const tab = await chrome.tabs.create({ url: pageUrl, active: true });
-    await chrome.storage.session.set({ dashboardTabId: tab.id });
+    const windowInfo = await chrome.windows.create({
+        url: pageUrl,
+        type: 'popup',
+        focused: true,
+        width: 480,
+        height: 760
+    });
+    if (!windowInfo || !windowInfo.id) throw new Error('浏览器未返回小窗 ID');
+    await chrome.storage.session.set({ dashboardWindowId: windowInfo.id });
 }
 
 chrome.action.onClicked.addListener(function () {
@@ -40,10 +52,10 @@ chrome.action.onClicked.addListener(function () {
     });
 });
 
-chrome.tabs.onRemoved.addListener(async function (tabId) {
-    const saved = await chrome.storage.session.get(['dashboardTabId']);
-    if (saved.dashboardTabId === tabId) {
-        await chrome.storage.session.remove(['dashboardTabId']);
+chrome.windows.onRemoved.addListener(async function (windowId) {
+    const saved = await chrome.storage.session.get(['dashboardWindowId']);
+    if (saved.dashboardWindowId === windowId) {
+        await chrome.storage.session.remove(['dashboardWindowId']);
     }
 });
 
@@ -97,7 +109,12 @@ async function exchangeCode(code) {
     });
 }
 
-async function startOAuth() {
+async function startOAuth(cookieFingerprint) {
+    const previous = await chrome.storage.session.get(['oauthTabId']);
+    if (previous.oauthTabId) {
+        try { await chrome.tabs.remove(previous.oauthTabId); } catch (_) {}
+    }
+    await chrome.storage.session.remove(SESSION_KEYS);
     const state = randomState();
     const url = new URL(AUTHORIZE_URL);
     url.search = new URLSearchParams({
@@ -105,7 +122,8 @@ async function startOAuth() {
         scope: REWARDS_SCOPE,
         response_type: 'code',
         redirect_uri: REDIRECT_URI,
-        state: state
+        state: state,
+        prompt: 'select_account'
     }).toString();
     const tab = await chrome.tabs.create({ url: url.toString(), active: true });
     await chrome.storage.session.set({
@@ -113,7 +131,8 @@ async function startOAuth() {
         oauthTabId: tab.id,
         oauthStatus: 'pending',
         oauthError: '',
-        refreshToken: ''
+        refreshToken: '',
+        oauthCookieFingerprint: String(cookieFingerprint || '')
     });
 }
 
@@ -142,7 +161,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     const run = async function () {
         if (!message || !message.type) throw new Error('消息格式错误');
         if (message.type === 'oauth:start') {
-            await startOAuth();
+            await startOAuth(message.cookieFingerprint);
             return { ok: true };
         }
         if (message.type === 'oauth:status') {
@@ -155,12 +174,20 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
                 ok: true,
                 status: data.oauthStatus || 'empty',
                 error: data.oauthError || '',
-                hasRefreshToken: Boolean(data.refreshToken)
+                hasRefreshToken: Boolean(data.refreshToken),
+                cookieFingerprint: data.oauthCookieFingerprint || ''
             };
         }
         if (message.type === 'oauth:get-token') {
-            const data = await chrome.storage.session.get(['refreshToken']);
-            return { ok: true, refreshToken: data.refreshToken || '' };
+            const data = await chrome.storage.session.get([
+                'refreshToken',
+                'oauthCookieFingerprint'
+            ]);
+            return {
+                ok: true,
+                refreshToken: data.refreshToken || '',
+                cookieFingerprint: data.oauthCookieFingerprint || ''
+            };
         }
         if (message.type === 'oauth:clear') {
             await chrome.storage.session.remove(SESSION_KEYS);

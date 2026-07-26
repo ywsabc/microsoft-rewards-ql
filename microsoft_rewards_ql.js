@@ -471,7 +471,9 @@ class RewardsRunner {
         this.http = new HttpClient(this.jar);
         // 导出的 Cookie Header 不包含原始 Domain/Path 元数据。搜索域返回的
         // Set-Cookie 不能写回 Rewards 会话，否则会覆盖同名的 Rewards Cookie。
-        this.searchHttp = new HttpClient(new CookieJar(account.cookie));
+        this.searchHttp = new HttpClient(new CookieJar(
+            account.searchCookie || account.cookie
+        ));
         this.regionHttp = new HttpClient(null);
         this.stateStore = new StateStore(this.name, config.stateDir);
         this.state = this.stateStore.data;
@@ -517,7 +519,9 @@ class RewardsRunner {
     syncRewardsSessionToSearch() {
         if (this.searchSessionSynced) return;
         for (const cookie of this.http.jar.cookies) {
-            this.searchHttp.jar.upsert(Object.assign({}, cookie));
+            if (cookie.domain.replace(/^\./, '') === 'rewards.bing.com') {
+                this.searchHttp.jar.upsert(Object.assign({}, cookie));
+            }
         }
         this.searchSessionSynced = true;
     }
@@ -1273,6 +1277,7 @@ function parseAccounts() {
             return {
                 name: item.name || '账号' + (index + 1),
                 cookie: item.cookie || '',
+                searchCookie: item.searchCookie || item.cookie || '',
                 refreshToken: item.refreshToken || item.refresh_token || '',
                 authCode: item.authCode || item.auth_code || ''
             };
@@ -1283,6 +1288,7 @@ function parseAccounts() {
     return [{
         name: process.env.BING_REWARDS_NAME || '账号1',
         cookie: cookie,
+        searchCookie: process.env.BING_REWARDS_SEARCH_COOKIE || cookie,
         refreshToken: process.env.BING_REWARDS_REFRESH_TOKEN || '',
         authCode: process.env.BING_REWARDS_AUTH_CODE || ''
     }];

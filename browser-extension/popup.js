@@ -17,7 +17,8 @@ const SAVED_SETTING_IDS = [
     'ql-client-secret'
 ];
 const elements = Object.fromEntries([
-    'status', 'copy-status', 'copy-cookie', 'copy-json', 'account-name',
+    'status', 'rewards-status', 'bing-status', 'refresh-session',
+    'copy-status', 'copy-cookie', 'copy-json', 'account-name',
     'start-oauth', 'clear-oauth', 'oauth-status',
     'ql-url', 'ql-client-id', 'ql-client-secret', 'remember-settings',
     'clear-settings', 'sync-ql'
@@ -25,7 +26,9 @@ const elements = Object.fromEntries([
     return [id, document.getElementById(id)];
 }));
 
-let cachedCookieHeader = '';
+let cachedRewardsCookieHeader = '';
+let cachedBingCookieHeader = '';
+let currentCookieFingerprint = '';
 let cookieReady = false;
 let oauthPoll = null;
 let saveTimer = null;
@@ -104,13 +107,21 @@ async function recordSyncStatus(text, ok) {
     });
 }
 
-function buildCookieHeader(cookies) {
+function buildCookieHeader(cookies, hostname) {
     const now = Date.now() / 1000;
     const current = cookies.filter(function (cookie) {
         return cookie.session || !cookie.expirationDate || cookie.expirationDate > now;
     });
     current.sort(function (left, right) {
         if (left.path.length !== right.path.length) return right.path.length - left.path.length;
+        const leftDomain = left.domain.replace(/^\./, '');
+        const rightDomain = right.domain.replace(/^\./, '');
+        const leftExact = left.hostOnly && leftDomain === hostname ? 1 : 0;
+        const rightExact = right.hostOnly && rightDomain === hostname ? 1 : 0;
+        if (leftExact !== rightExact) return rightExact - leftExact;
+        if (leftDomain.length !== rightDomain.length) {
+            return rightDomain.length - leftDomain.length;
+        }
         return left.name.localeCompare(right.name);
     });
     const values = new Map();
@@ -122,6 +133,27 @@ function buildCookieHeader(cookies) {
     }).join('; ');
 }
 
+function cookieValue(header, name) {
+    const prefix = name + '=';
+    const part = String(header || '').split(/;\s*/).find(function (item) {
+        return item.startsWith(prefix);
+    });
+    return part ? part.slice(prefix.length) : '';
+}
+
+async function fingerprintCookies(rewardsCookie, bingCookie) {
+    const stableIdentity = [
+        cookieValue(rewardsCookie, '_U'),
+        cookieValue(rewardsCookie, '.MSA.Auth'),
+        cookieValue(bingCookie, '_U')
+    ].join('\n');
+    const bytes = new TextEncoder().encode(stableIdentity);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), function (value) {
+        return value.toString(16).padStart(2, '0');
+    }).join('');
+}
+
 async function copyText(text, successMessage) {
     await navigator.clipboard.writeText(text);
     setMessage(elements['copy-status'], successMessage, true);
@@ -131,28 +163,62 @@ async function loadCookies() {
     elements['copy-cookie'].disabled = true;
     elements['copy-json'].disabled = true;
     elements['sync-ql'].disabled = true;
+    elements['start-oauth'].disabled = true;
     cookieReady = false;
+    currentCookieFingerprint = '';
     try {
-        const cookies = await getCookies({ url: 'https://rewards.bing.com/' });
-        cachedCookieHeader = buildCookieHeader(cookies);
-        const names = new Set(cookies.map(function (cookie) { return cookie.name; }));
+        const results = await Promise.all([
+            getCookies({ url: 'https://rewards.bing.com/' }),
+            getCookies({ url: 'https://www.bing.com/' })
+        ]);
+        const rewardsCookies = results[0];
+        const bingCookies = results[1];
+        cachedRewardsCookieHeader = buildCookieHeader(
+            rewardsCookies,
+            'rewards.bing.com'
+        );
+        cachedBingCookieHeader = buildCookieHeader(bingCookies, 'www.bing.com');
+        const names = new Set(rewardsCookies.map(function (cookie) {
+            return cookie.name;
+        }));
         const missing = REQUIRED_AUTH_COOKIES.filter(function (name) { return !names.has(name); });
-        if (!cachedCookieHeader || missing.length) {
-            elements.status.className = 'error';
-            elements.status.textContent = missing.length
-                ? 'Cookie 不完整，缺少 ' + missing.join('、') + '。请先打开积分仪表板。'
-                : '未读取到 Cookie，请先登录 Microsoft Rewards。';
+        const rewardsU = cookieValue(cachedRewardsCookieHeader, '_U');
+        const bingU = cookieValue(cachedBingCookieHeader, '_U');
+        elements['rewards-status'].className = 'session-line ' + (
+            cachedRewardsCookieHeader && !missing.length ? 'ok' : 'error'
+        );
+        elements['rewards-status'].textContent = cachedRewardsCookieHeader && !missing.length
+            ? 'Rewards：已登录，共 ' + rewardsCookies.length + ' 项 Cookie'
+            : 'Rewards：缺少 ' + (missing.join('、') || '登录 Cookie');
+        elements['bing-status'].className = 'session-line ' + (bingU ? 'ok' : 'error');
+        elements['bing-status'].textContent = bingU
+            ? 'Bing：已登录，共 ' + bingCookies.length + ' 项 Cookie'
+            : 'Bing：缺少 _U，请先登录 www.bing.com';
+        if (!cachedRewardsCookieHeader || missing.length || !bingU) {
+            setMessage(elements.status, '两个站点尚未全部登录，暂不能同步。', false);
             return;
         }
+        if (rewardsU !== bingU) {
+            setMessage(
+                elements.status,
+                'Bing 与 Rewards 的 _U 会话不一致，请切换为同一账号后刷新。',
+                false
+            );
+            elements['bing-status'].className = 'session-line error';
+            return;
+        }
+        currentCookieFingerprint = await fingerprintCookies(
+            cachedRewardsCookieHeader,
+            cachedBingCookieHeader
+        );
         cookieReady = true;
-        elements.status.className = 'ok';
-        elements.status.textContent = '已检测到登录 Cookie（共 ' + cookies.length + ' 项）。';
+        setMessage(elements.status, '两个站点的 Bing 登录会话一致，可以授权和同步。', true);
         elements['copy-cookie'].disabled = false;
         elements['copy-json'].disabled = false;
         elements['sync-ql'].disabled = false;
+        elements['start-oauth'].disabled = false;
     } catch (error) {
-        elements.status.className = 'error';
-        elements.status.textContent = '读取失败：' + error.message;
+        setMessage(elements.status, '读取失败：' + error.message, false);
     }
 }
 
@@ -160,9 +226,16 @@ async function getAccountConfig(requireToken) {
     if (!cookieReady) throw new Error('Cookie 尚未就绪');
     const tokenResult = await sendMessage({ type: 'oauth:get-token' });
     if (requireToken && !tokenResult.refreshToken) throw new Error('请先完成 OAuth 授权');
+    if (
+        tokenResult.refreshToken
+        && tokenResult.cookieFingerprint !== currentCookieFingerprint
+    ) {
+        throw new Error('Cookie 账号已切换，请重新选择账号并完成 OAuth 授权');
+    }
     return [{
         name: elements['account-name'].value.trim() || '账号1',
-        cookie: cachedCookieHeader,
+        cookie: cachedRewardsCookieHeader,
+        searchCookie: cachedBingCookieHeader,
         refreshToken: tokenResult.refreshToken || ''
     }];
 }
@@ -171,7 +244,21 @@ async function updateOAuthStatus() {
     try {
         const result = await sendMessage({ type: 'oauth:status' });
         if (result.status === 'ready') {
-            setMessage(elements['oauth-status'], 'refreshToken 已获取，当前浏览器会话内有效。', true);
+            if (!currentCookieFingerprint) {
+                setMessage(elements['oauth-status'], '请先完成两个站点的登录检查。', false);
+            } else if (result.cookieFingerprint !== currentCookieFingerprint) {
+                setMessage(
+                    elements['oauth-status'],
+                    'Cookie 账号已经变化，旧 Token 已失效，请重新选择账号授权。',
+                    false
+                );
+            } else {
+                setMessage(
+                    elements['oauth-status'],
+                    'refreshToken 已获取，并已绑定当前 Cookie 会话。',
+                    true
+                );
+            }
             if (oauthPoll) clearInterval(oauthPoll);
             oauthPoll = null;
         } else if (result.status === 'pending') {
@@ -255,7 +342,7 @@ async function syncToQingLong() {
     chrome.storage.session.set({
         lastSyncStatus: { text: pendingText, ok: true, time: Date.now() }
     }).catch(function () {});
-    // 固定标签页不会像 action 弹窗一样在权限确认时被销毁。
+    // 独立扩展小窗不会像 action 临时弹层一样在权限确认时被销毁。
     // permissions.request 保持为本次点击后的第一个异步等待。
     await requestOriginPermission(origin);
     await saveSettings();
@@ -265,12 +352,16 @@ async function syncToQingLong() {
     const apiToken = tokenData.token;
     await upsertEnv(origin, apiToken, 'BING_REWARDS_ACCOUNTS', JSON.stringify(accounts), '由浏览器扩展同步');
     await upsertEnv(origin, apiToken, 'bing_ck_1', accounts[0].cookie, '由浏览器扩展同步');
+    await upsertEnv(origin, apiToken, 'bing_search_ck_1', accounts[0].searchCookie, '由浏览器扩展同步');
     await upsertEnv(origin, apiToken, 'bing_token_1', accounts[0].refreshToken, '由浏览器扩展同步');
-    await recordSyncStatus('同步成功：账号 JSON、Cookie 和 Token 均已写入青龙。', true);
+    await recordSyncStatus('同步成功：Rewards Cookie、Bing Cookie 和 Token 均已写入青龙。', true);
 }
 
 elements['copy-cookie'].addEventListener('click', function () {
-    if (cachedCookieHeader) copyText(cachedCookieHeader, 'Cookie 已复制。').catch(function (error) {
+    if (cachedRewardsCookieHeader) copyText(
+        cachedRewardsCookieHeader,
+        'Rewards Cookie 已复制；完整配置请复制账号 JSON。'
+    ).catch(function (error) {
         setMessage(elements['copy-status'], error.message, false);
     });
 });
@@ -284,12 +375,26 @@ elements['copy-json'].addEventListener('click', function () {
 });
 
 elements['start-oauth'].addEventListener('click', function () {
-    sendMessage({ type: 'oauth:start' }).then(function () {
+    if (!cookieReady || !currentCookieFingerprint) {
+        setMessage(elements['oauth-status'], '请先让 Bing 与 Rewards 登录同一账号。', false);
+        return;
+    }
+    sendMessage({
+        type: 'oauth:start',
+        cookieFingerprint: currentCookieFingerprint
+    }).then(function () {
         updateOAuthStatus();
         if (oauthPoll) clearInterval(oauthPoll);
         oauthPoll = setInterval(updateOAuthStatus, 1000);
     }).catch(function (error) {
         setMessage(elements['oauth-status'], error.message, false);
+    });
+});
+
+elements['refresh-session'].addEventListener('click', function () {
+    elements['refresh-session'].disabled = true;
+    loadCookies().then(updateOAuthStatus).finally(function () {
+        elements['refresh-session'].disabled = false;
     });
 });
 
@@ -332,9 +437,15 @@ elements['sync-ql'].addEventListener('click', function () {
     });
 });
 
-restoreSettings().catch(function (error) {
-    setMessage(elements['copy-status'], '读取保存信息失败：' + error.message, false);
-});
-restoreSyncStatus().catch(function () {});
-loadCookies();
-updateOAuthStatus();
+async function initialize() {
+    try {
+        await restoreSettings();
+    } catch (error) {
+        setMessage(elements['copy-status'], '读取保存信息失败：' + error.message, false);
+    }
+    await restoreSyncStatus().catch(function () {});
+    await loadCookies();
+    await updateOAuthStatus();
+}
+
+initialize();

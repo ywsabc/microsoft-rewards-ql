@@ -5,7 +5,7 @@
 }
 
 body {
-  min-width: 360px;
+  min-width: 400px;
   margin: 0;
   color: #1f2937;
   background: #f3f6fb;
@@ -13,7 +13,7 @@ body {
 
 main {
   box-sizing: border-box;
-  width: min(100%, 720px);
+  width: min(100%, 480px);
   margin: 0 auto;
   padding: 16px;
 }
@@ -21,6 +21,18 @@ main {
 header h1 {
   margin: 0;
   font-size: 20px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.title-row button {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 header p {
@@ -75,6 +87,16 @@ input {
   color: #64748b;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.session-line {
+  margin: 7px 0;
+}
+
+.session-links {
+  display: flex;
+  gap: 18px;
+  margin-top: 10px;
 }
 
 label:not(:first-of-type) {

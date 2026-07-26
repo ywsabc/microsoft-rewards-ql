@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.1.0');
+    assert.equal(manifest.version, '2.2.0');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -75,7 +75,17 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(backgroundSource, /chrome\.storage\.session/);
     assert.doesNotMatch(backgroundSource, /chrome\.storage\.local/);
     assert.match(backgroundSource, /chrome\.action\.onClicked/);
+    assert.match(backgroundSource, /chrome\.windows\.create/);
+    assert.match(backgroundSource, /type:\s*'popup'/);
+    assert.match(backgroundSource, /width:\s*480/);
+    assert.match(backgroundSource, /height:\s*760/);
+    assert.match(backgroundSource, /prompt:\s*'select_account'/);
+    assert.match(backgroundSource, /oauthCookieFingerprint/);
     assert.match(popupSource, /chrome\.storage\.local/);
+    assert.match(popupSource, /searchCookie:\s*cachedBingCookieHeader/);
+    assert.match(popupSource, /fingerprintCookies/);
+    assert.match(popupSource, /https:\/\/www\.bing\.com\//);
+    assert.match(popupSource, /bing_search_ck_1/);
     assert.match(
         popupSource,
         /const SAVED_SETTING_IDS = \[\s*'account-name',\s*'ql-url',\s*'ql-client-id',\s*'ql-client-secret'\s*\]/

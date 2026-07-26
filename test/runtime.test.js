@@ -17,12 +17,14 @@ test('CookieJar scopes Bing cookies and merges per-request cookies', function ()
 test('parseAccounts accepts multi-account JSON', function () {
     const previous = process.env.BING_REWARDS_ACCOUNTS;
     process.env.BING_REWARDS_ACCOUNTS = JSON.stringify([
-        { name: 'A', cookie: 'MUID=x', refreshToken: 'r1' },
+        { name: 'A', cookie: 'MUID=x', searchCookie: 'MUID=search-x', refreshToken: 'r1' },
         { name: 'B', cookie: 'MUID=y', authCode: 'c2' }
     ]);
     const accounts = runtime.parseAccounts();
     assert.equal(accounts.length, 2);
     assert.equal(accounts[0].refreshToken, 'r1');
+    assert.equal(accounts[0].searchCookie, 'MUID=search-x');
+    assert.equal(accounts[1].searchCookie, 'MUID=y');
     assert.equal(accounts[1].authCode, 'c2');
     if (previous === undefined) delete process.env.BING_REWARDS_ACCOUNTS;
     else process.env.BING_REWARDS_ACCOUNTS = previous;
@@ -110,6 +112,36 @@ test('Rewards, search, and region requests use isolated cookie clients', functio
     assert.match(runner.http.jar.getHeader('https://rewards.bing.com/earn'), /WLS=rewards-session/);
     assert.equal(runner.host, 'www.bing.com');
     assert.match(runner.searchHttp.jar.getHeader('https://www.bing.com/'), /WLS=search-session/);
+});
+
+test('RewardsRunner uses the dedicated Bing search cookie when provided', function () {
+    const runner = new runtime.RewardsRunner(
+        {
+            name: 'split-session-test',
+            cookie: 'WLS=rewards-session; _U=rewards-auth',
+            searchCookie: 'WLS=search-session; _U=search-auth'
+        },
+        {
+            tasks: new Set(),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    assert.match(
+        runner.http.jar.getHeader('https://rewards.bing.com/earn'),
+        /WLS=rewards-session/
+    );
+    assert.match(
+        runner.searchHttp.jar.getHeader('https://www.bing.com/search'),
+        /WLS=search-session/
+    );
 });
 
 test('extractBingActivityContext uses the live SERP IG and IID', function () {

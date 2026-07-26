@@ -51,7 +51,8 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 [
   {
     "name": "账号1",
-    "cookie": "MUID=...; _U=...; ...",
+    "cookie": ".MSA.Auth=...; _U=...; ...",
+    "searchCookie": "_U=...; MUID=...; ...",
     "refreshToken": "M.R3_BAY...."
   },
   {
@@ -65,6 +66,8 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 - `name`：账号备注。
 - `cookie`：必填。在已登录 `https://rewards.bing.com/` 的浏览器请求头中取得完整
   `Cookie` 值。
+- `searchCookie`：可选但推荐。在已登录 `https://www.bing.com/` 的浏览器请求头中
+  取得。未配置时沿用 `cookie`；浏览器扩展会分别读取并自动填写两个站点的 Cookie。
 - `refreshToken`：推荐配置，用于 App 签到和阅读。
 - `authCode`：可选的一次性授权码或完整 OAuth 回调 URL。兑换成功后，新的
   `refreshToken` 会保存到 `.state`，之后不再需要配置 `authCode`。
@@ -74,6 +77,7 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 ```text
 BING_REWARDS_NAME
 BING_REWARDS_COOKIE
+BING_REWARDS_SEARCH_COOKIE
 BING_REWARDS_REFRESH_TOKEN
 BING_REWARDS_AUTH_CODE
 ```
