@@ -90,12 +90,13 @@ BING_REWARDS_AUTH_CODE
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `BING_REWARDS_TASKS` | `sign,read,promos,quiz,search,streak,claim` | 启用的任务；`claim` 自动领取首页待领取积分 |
+| `BING_REWARDS_TASKS` | `sign,read,promos,quiz,search,mobile,streak,claim` | 启用的任务；`mobile` 为移动 UA 搜索，`claim` 自动领取首页待领取积分 |
 | `BING_REWARDS_LOCK_CN` | `1` | 非大陆出口 IP 时停止 |
 | `BING_REWARDS_DRY_RUN` | `0` | `1` 时只查询，不提交任务 |
 | `BING_REWARDS_NOTIFY` | `1` | 是否调用根目录 `sendNotify.js` |
 | `BING_REWARDS_SEARCH_INTERVAL` | `30` | 搜索基础间隔秒数，实际加入 ±15 秒随机量 |
 | `BING_REWARDS_SEARCH_COUNT` | `6` | 每轮最多搜索次数 |
+| `BING_REWARDS_MOBILE_SEARCH_COUNT` | `3` | 每轮最多移动搜索次数；新版国区 Rewards 通常与 PC 共用搜索配额 |
 | `BING_REWARDS_SEARCH_SOURCE` | `hot` | `hot/auto` 使用热搜多源并失败回退；`local/offline` 只用本地词库 |
 | `BING_REWARDS_MAX_PROMOS` | `20` | 每轮最多处理活动卡片数 |
 | `BING_REWARDS_PROMO_RETRY_HOURS` | `12` | 未确认活动卡片的最短重试间隔，避免定时任务重复提交 |

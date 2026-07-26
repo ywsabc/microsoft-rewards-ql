@@ -548,6 +548,7 @@ class RewardsRunner {
             read: '未执行',
             promos: '未执行',
             search: '未执行',
+            mobileSearch: '未执行',
             streak: '未执行'
         };
     }
@@ -1295,6 +1296,88 @@ class RewardsRunner {
         return parseBingActivityResponse(response.text);
     }
 
+    async mobileSearchOnce(query) {
+        const date = new Date();
+        const dateText = (date.getMonth() + 1) + '/' + date.getDate() + '/' + date.getFullYear();
+        const params = 'q=' + encodeURIComponent(query)
+            + '&form=QBLH' + (this.config.lockCN ? '&mkt=zh-CN' : '');
+        return this.reportMobileBingActivity(
+            'https://' + this.host + '/search?' + params,
+            dateText
+        );
+    }
+
+    async reportMobileBingActivity(destination, dateText) {
+        this.syncRewardsSessionToSearch();
+        const target = new URL(destination, 'https://' + this.host + '/');
+        if (target.hostname === 'bing.com' || target.hostname === 'cn.bing.com') {
+            target.hostname = this.host;
+        }
+        if (target.hostname !== this.host) {
+            throw new Error('活动目标不是受支持的 Bing 搜索页');
+        }
+        const today = dateText || (function () {
+            const date = new Date();
+            return (date.getMonth() + 1) + '/' + date.getDate() + '/' + date.getFullYear();
+        })();
+        const cookie = '_Rwho=u=m&ts=' + today;
+        const referer = target.origin + '/?form=QBLH';
+        const headers = {
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'user-agent': UA.mobile,
+            referer: target.toString(),
+            origin: target.origin,
+            accept: '*/*',
+            cookie: cookie
+        };
+
+        // 移动 SERP 不稳定地输出 IID。当前 Bing 移动端先初始化
+        // rewardsapp/ncheader，再使用同一 IG/IID 上报活动。
+        await this.searchHttp.request(target.toString(), {
+            headers: {
+                'user-agent': UA.mobile,
+                referer: referer,
+                cookie: cookie
+            }
+        });
+        const ig = crypto.randomBytes(16).toString('hex').toUpperCase();
+        const iid = 'SERP.5047';
+        const common = new URLSearchParams({
+            ver: '88888888',
+            IID: iid,
+            IG: ig,
+            ajaxreq: '1'
+        });
+        await this.searchHttp.request(
+            target.origin + '/rewardsapp/ncheader?' + common.toString(),
+            {
+                method: 'POST',
+                headers: headers,
+                body: 'wb=1%3bi%3d1%3bv%3d1'
+            }
+        );
+        const report = new URLSearchParams({
+            IG: ig,
+            IID: iid
+        });
+        for (const [name, value] of target.searchParams) {
+            report.append(name, value);
+        }
+        report.set('ajaxreq', '1');
+        const response = await this.searchHttp.request(
+            target.origin + '/rewardsapp/reportActivity?' + report.toString(),
+            {
+                method: 'POST',
+                headers: headers,
+                body: new URLSearchParams({
+                    url: target.toString(),
+                    V: 'web'
+                }).toString()
+            }
+        );
+        return parseBingActivityResponse(response.text);
+    }
+
     async getSearchQueries(count) {
         if (this.config.searchSource !== 'local') {
             try {
@@ -1375,6 +1458,97 @@ class RewardsRunner {
         } catch (error) {
             this.result.search = '失败';
             this.log('🔴', '搜索任务失败: ' + error.message);
+        }
+    }
+
+    async runMobileSearch() {
+        if (!this.config.tasks.has('mobile')) return;
+        try {
+            let info = await this.getRewardsInfo();
+            this.log(
+                '📱',
+                '移动搜索使用合并配额 PC ' + info.pc.progress + '/' + info.pc.max
+            );
+            if (this.config.dryRun) {
+                this.result.mobileSearch = 'dry-run ' + info.pc.progress + '/'
+                    + info.pc.max + '（合并配额）';
+                return;
+            }
+            if (info.pc.max > 0 && info.pc.progress >= info.pc.max) {
+                this.result.mobileSearch = info.pc.progress + '/' + info.pc.max
+                    + '（合并配额）';
+                return;
+            }
+            const searchStartBalance = info.balance;
+            let latestResponseBalance = searchStartBalance;
+            const queries = await this.getSearchQueries(
+                this.config.mobileSearchCount
+            );
+            let confirmedPoints = 0;
+            for (let i = 0; i < queries.length; i++) {
+                const query = queries[i];
+                this.log(
+                    '📱',
+                    '移动搜索 ' + (i + 1) + '/' + queries.length + ': ' + query
+                );
+                const activity = await this.mobileSearchOnce(query);
+                const evaluation = evaluateBingReward(
+                    activity,
+                    latestResponseBalance
+                );
+                latestResponseBalance = evaluation.nextBalance;
+                if (evaluation.confirmedIncrement > 0) {
+                    confirmedPoints += evaluation.confirmedIncrement;
+                    this.log(
+                        '🟢',
+                        'Bing 移动搜索余额确认 +'
+                            + evaluation.confirmedIncrement
+                    );
+                } else if (
+                    evaluation.reportedIncrement !== null
+                    && evaluation.reportedIncrement > 0
+                ) {
+                    this.log(
+                        '🟡',
+                        '移动接口 RewardsIncrement 返回 +'
+                            + evaluation.reportedIncrement
+                            + '，但余额未变化，暂不确认入账'
+                    );
+                }
+                if (i + 1 < queries.length) {
+                    await this.delay(
+                        Math.max(
+                            1000,
+                            (this.config.searchInterval - 15) * 1000
+                        ),
+                        (this.config.searchInterval + 15) * 1000
+                    );
+                }
+            }
+            info = await this.getRewardsInfo();
+            this.result.mobileSearch = info.pc.progress + '/' + info.pc.max
+                + '（合并配额';
+            const dashboardDelta = Math.max(
+                0,
+                info.balance - searchStartBalance
+            );
+            if (dashboardDelta > 0) {
+                this.result.mobileSearch += '，本轮余额 +' + dashboardDelta;
+            } else if (confirmedPoints === 0) {
+                this.result.mobileSearch += '，本轮未确认入账';
+            }
+            this.result.mobileSearch += '）';
+            if (confirmedPoints > dashboardDelta) {
+                this.log(
+                    '🟡',
+                    '移动接口余额曾确认 +' + confirmedPoints
+                        + '，最终面板仅 +' + dashboardDelta
+                        + '；以最终 Rewards 面板为准'
+                );
+            }
+        } catch (error) {
+            this.result.mobileSearch = '失败';
+            this.log('🔴', '移动搜索任务失败: ' + error.message);
         }
     }
 
@@ -1491,6 +1665,17 @@ class RewardsRunner {
         await this.runPromos(false);
         await this.delay(3000, 8000);
         await this.runSearch();
+        if (
+            this.config.tasks.has('search')
+            && this.config.tasks.has('mobile')
+            && !this.config.dryRun
+        ) {
+            await this.delay(
+                Math.max(1000, (this.config.searchInterval - 15) * 1000),
+                (this.config.searchInterval + 15) * 1000
+            );
+        }
+        await this.runMobileSearch();
         if (this.config.tasks.has('promos') && !this.config.dryRun) {
             await this.delay(3000, 8000);
             await this.runPromos(true);
@@ -1538,7 +1723,7 @@ function parseAccounts() {
 }
 
 function buildConfig() {
-    const taskText = process.env.BING_REWARDS_TASKS || 'sign,read,promos,quiz,search,streak,claim';
+    const taskText = process.env.BING_REWARDS_TASKS || 'sign,read,promos,quiz,search,mobile,streak,claim';
     const searchSourceValue = String(process.env.BING_REWARDS_SEARCH_SOURCE || 'hot').trim().toLowerCase();
     if (!['hot', 'auto', 'local', 'offline'].includes(searchSourceValue)) {
         throw new Error('BING_REWARDS_SEARCH_SOURCE 仅支持 hot/auto/local/offline');
@@ -1551,6 +1736,12 @@ function buildConfig() {
         delayScale: numberEnv('BING_REWARDS_DELAY_SCALE', 1, 0, 10),
         searchInterval: numberEnv('BING_REWARDS_SEARCH_INTERVAL', 30, 15, 600),
         searchCount: numberEnv('BING_REWARDS_SEARCH_COUNT', 6, 1, 30),
+        mobileSearchCount: numberEnv(
+            'BING_REWARDS_MOBILE_SEARCH_COUNT',
+            3,
+            1,
+            10
+        ),
         searchSource: ['local', 'offline'].includes(searchSourceValue) ? 'local' : 'hot',
         maxPromos: numberEnv('BING_REWARDS_MAX_PROMOS', 20, 0, 100),
         promoRetryHours: numberEnv('BING_REWARDS_PROMO_RETRY_HOURS', 12, 1, 72),
@@ -1567,6 +1758,7 @@ function formatSummary(results) {
             '阅读：' + item.read,
             '活动：' + item.promos,
             '搜索：' + item.search,
+            '移动搜索：' + item.mobileSearch,
             '连签：' + item.streak,
             '积分：' + item.startBalance + ' → ' + item.endBalance
         ];

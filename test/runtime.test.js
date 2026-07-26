@@ -236,6 +236,50 @@ test('reportBingPageActivity reports with identifiers from the loaded page', asy
     assert.equal(result.increment, 1);
 });
 
+test('reportMobileBingActivity initializes and reports the mobile SERP', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'mobile-search-protocol-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['mobile']),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            mobileSearchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    const requests = [];
+    runner.searchHttp.request = async function (url, options) {
+        requests.push({ url: url, options: options });
+        if (requests.length < 3) return { text: '' };
+        return {
+            text: '{"IsAuthenticated":true,"RewardsIncrement":1,"Balance":4305}'
+        };
+    };
+    const result = await runner.reportMobileBingActivity(
+        'https://www.bing.com/search?q=mobile&form=QBLH&mkt=zh-CN',
+        '7/26/2026'
+    );
+    assert.equal(requests.length, 3);
+    assert.match(requests[0].options.headers['user-agent'], /Mobile/);
+    assert.match(requests[0].options.headers.cookie, /_Rwho=u=m/);
+    assert.match(requests[1].url, /\/rewardsapp\/ncheader\?/);
+    assert.match(requests[1].url, /IID=SERP\.5047/);
+    assert.match(requests[1].url, /ajaxreq=1/);
+    assert.equal(requests[1].options.body, 'wb=1%3bi%3d1%3bv%3d1');
+    assert.match(requests[2].url, /\/rewardsapp\/reportActivity\?/);
+    assert.match(requests[2].url, /IID=SERP\.5047/);
+    assert.match(requests[2].url, /q=mobile/);
+    assert.match(requests[2].url, /ajaxreq=1/);
+    assert.match(requests[2].options.body, /V=web/);
+    assert.equal(result.increment, 1);
+});
+
 test('reportDailyActivity uses the commerce protocol for Rewards cards', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'daily-protocol-test', cookie: 'WLS=session; _U=auth' },
@@ -663,6 +707,8 @@ test('buildConfig supports hot and local search sources', function () {
     process.env.BING_REWARDS_SEARCH_SOURCE = 'auto';
     assert.equal(runtime.buildConfig().searchSource, 'hot');
     assert.equal(runtime.buildConfig().promoRetryHours, 12);
+    assert.equal(runtime.buildConfig().mobileSearchCount, 3);
+    assert.equal(runtime.buildConfig().tasks.has('mobile'), true);
     if (previous === undefined) delete process.env.BING_REWARDS_SEARCH_SOURCE;
     else process.env.BING_REWARDS_SEARCH_SOURCE = previous;
 });

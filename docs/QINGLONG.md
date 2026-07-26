@@ -113,7 +113,7 @@ BING_REWARDS_DRY_RUN=0
 默认模块为：
 
 ```text
-sign,read,promos,quiz,search,streak,claim
+sign,read,promos,quiz,search,mobile,streak,claim
 ```
 
 - `sign`：App/兼容签到。
@@ -121,6 +121,8 @@ sign,read,promos,quiz,search,streak,claim
 - `promos`：普通活动卡片。
 - `quiz`：允许处理 Quiz 类型卡片；需要完整浏览器交互的题型可能跳过。
 - `search`：少量、带随机间隔的 Bing 搜索。
+- `mobile`：使用移动端 Bing 协议执行少量搜索，默认每轮 3 次。新版国区 Rewards
+  通常把它计入与 PC 相同的合并搜索配额，因此日志会显示“合并配额”。
 - `streak`：读取连签状态。
 - `claim`：领取首页待领取积分；待领取为 0 时不会发送领取请求。
 
@@ -129,6 +131,14 @@ sign,read,promos,quiz,search,streak,claim
 ```text
 BING_REWARDS_TASKS=sign,read,claim
 ```
+
+如需调整移动搜索次数，可设置：
+
+```text
+BING_REWARDS_MOBILE_SEARCH_COUNT=3
+```
+
+不建议为了跑满配额而提高频率或反复手动执行；默认主任务每天只运行一次。
 
 ## 6. 更新脚本
 
