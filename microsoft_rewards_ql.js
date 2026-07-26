@@ -174,6 +174,32 @@ function safeJson(text) {
     }
 }
 
+function extractBingActivityContext(html) {
+    const text = String(html || '');
+    const ig = text.match(/\bIG:"([A-F0-9]+)"/i)
+        || text.match(/\bIG:\\"([A-F0-9]+)\\"/i);
+    const iid = text.match(/(?:window\.)?data_iid\s*=\s*["']([^"']+)["']/i)
+        || text.match(/"IID":"([^"]+)"/i)
+        || text.match(/\bIID:\\"([^"\\]+)\\"/i);
+    if (!ig || !iid) throw new Error('搜索页缺少 IG/IID 活动上下文');
+    return { ig: ig[1], iid: iid[1] };
+}
+
+function parseBingActivityResponse(html) {
+    const text = String(html || '');
+    const authenticated = text.match(/"IsAuthenticated":(true|false)/i);
+    if (authenticated && authenticated[1].toLowerCase() !== 'true') {
+        throw new Error('Bing 搜索会话未登录 Rewards');
+    }
+    const increment = text.match(/"RewardsIncrement":(-?\d+(?:\.\d+)?)/i);
+    const balance = text.match(/"Balance":(-?\d+(?:\.\d+)?)/i);
+    return {
+        authenticated: !authenticated || authenticated[1].toLowerCase() === 'true',
+        increment: increment ? Number(increment[1]) : null,
+        balance: balance ? Number(balance[1]) : null
+    };
+}
+
 function extractEmbeddedJson(text, key, maxLength) {
     const marker = '"' + key + '":';
     let start = String(text || '').indexOf(marker);
@@ -452,7 +478,9 @@ class RewardsRunner {
         this.accessToken = '';
         this.refreshToken = this.state.refreshToken || account.refreshToken || '';
         this.region = 'CN';
-        this.host = config.lockCN ? 'cn.bing.com' : 'www.bing.com';
+        // Bing 当前的 Rewards 搜索上报由实际 SERP 页面生成 IG/IID。
+        // 使用 www.bing.com 并通过 mkt 锁定中文市场，与上游浏览器脚本一致。
+        this.host = 'www.bing.com';
         this.logs = [];
         this.result = {
             name: this.name,
@@ -666,14 +694,22 @@ class RewardsRunner {
 
     async reportActivity(offerId, hash, referer) {
         const source = referer || 'https://rewards.bing.com/';
-        // 活动目标经常是 cn.bing.com 搜索页，但防伪令牌属于 Rewards 域。
         const token = await this.getVerificationToken('https://rewards.bing.com/');
+        if (!token) {
+            const error = new Error('当前 Rewards 页面未提供旧版防伪令牌');
+            error.code = 'LEGACY_REWARDS_UNAVAILABLE';
+            throw error;
+        }
         const params = new URLSearchParams({
             id: offerId,
             hash: hash || '1',
-            activityAmount: '1'
+            activityAmount: '1',
+            timeZone: '480',
+            dbs: '0',
+            form: '',
+            type: ''
         });
-        if (token) params.set('__RequestVerificationToken', token);
+        params.set('__RequestVerificationToken', token);
         const headers = {
             'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'user-agent': UA.pc,
@@ -681,7 +717,7 @@ class RewardsRunner {
             origin: 'https://rewards.bing.com',
             'x-requested-with': 'XMLHttpRequest'
         };
-        if (token) headers.RequestVerificationToken = token;
+        headers.RequestVerificationToken = token;
         return this.http.request(
             'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest',
             { method: 'POST', headers: headers, body: params.toString() }
@@ -749,7 +785,11 @@ class RewardsRunner {
             total += pcPoints;
             this.log('💻', 'PC 签到确认 +' + pcPoints);
         } catch (error) {
-            this.log('🟡', 'PC 签到失败: ' + error.message);
+            if (error.code === 'LEGACY_REWARDS_UNAVAILABLE') {
+                this.log('🟡', '当前 Rewards 已停用旧版 PC 签到接口，跳过该分支');
+            } else {
+                this.log('🟡', 'PC 签到失败: ' + error.message);
+            }
         }
         this.result.sign = success ? '完成 +' + total : '失败';
     }
@@ -876,6 +916,17 @@ class RewardsRunner {
     async claimCard(card) {
         if (card.kind === 'quiz' && !this.config.tasks.has('quiz')) return false;
         try {
+            const target = new URL(card.url || '', 'https://rewards.bing.com/');
+            if (target.hostname === 'bing.com' || target.hostname.endsWith('.bing.com')) {
+                const activity = await this.reportBingPageActivity(target.toString());
+                const points = activity.increment === null ? '已接受' : '+' + activity.increment;
+                this.log('🟢', 'Bing 活动上报' + points);
+                return true;
+            }
+        } catch (bingError) {
+            this.log('🟡', 'Bing 页面活动上报失败，尝试旧接口: ' + bingError.message);
+        }
+        try {
             await this.reportActivity(card.offerId, card.hash, card.url);
             return true;
         } catch (firstError) {
@@ -921,30 +972,48 @@ class RewardsRunner {
         const date = new Date();
         const dateText = (date.getMonth() + 1) + '/' + date.getDate() + '/' + date.getFullYear();
         const params = 'q=' + encodeURIComponent(query) + '&form=QBLH' + (this.config.lockCN ? '&mkt=zh-CN' : '');
-        const referer = 'https://' + this.host + '/?form=QBLH';
-        const cookie = '_Rwho=u=d&ts=' + dateText;
-        await this.searchHttp.request('https://' + this.host + '/search?' + params, {
+        return this.reportBingPageActivity('https://' + this.host + '/search?' + params, dateText);
+    }
+
+    async reportBingPageActivity(destination, dateText) {
+        const target = new URL(destination, 'https://' + this.host + '/');
+        if (target.hostname === 'bing.com' || target.hostname === 'cn.bing.com') {
+            target.hostname = this.host;
+        }
+        if (target.hostname !== this.host) {
+            throw new Error('活动目标不是受支持的 Bing 搜索页');
+        }
+        const referer = target.origin + '/?form=QBLH';
+        const today = dateText || (function () {
+            const date = new Date();
+            return (date.getMonth() + 1) + '/' + date.getDate() + '/' + date.getFullYear();
+        })();
+        const cookie = '_Rwho=u=d&ts=' + today;
+        const page = await this.searchHttp.request(target.toString(), {
             headers: { 'user-agent': UA.pc, referer: referer, cookie: cookie }
         });
-        const ig = crypto.randomBytes(16).toString('hex').toUpperCase();
+        const context = extractBingActivityContext(page.text);
         const headers = {
             'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'user-agent': UA.pc,
-            referer: referer,
+            referer: target.toString(),
+            origin: target.origin,
+            accept: '*/*',
             cookie: cookie
         };
-        await this.searchHttp.request(
-            'https://' + this.host + '/rewardsapp/ncheader?ver=88888888&IID=SERP.5047&IG=' + ig + '&ajaxreq=1',
-            { method: 'POST', headers: headers, body: 'wb=1%3bi%3d1%3bv%3d1' }
-        );
-        await this.searchHttp.request(
-            'https://' + this.host + '/rewardsapp/reportActivity?IG=' + ig + '&IID=SERP.5047&' + params + '&ajaxreq=1',
+        const query = target.search ? '&' + target.search.slice(1) : '';
+        const response = await this.searchHttp.request(
+            target.origin + '/rewardsapp/reportActivity?IG='
+                + encodeURIComponent(context.ig)
+                + '&IID=' + encodeURIComponent(context.iid)
+                + query,
             {
                 method: 'POST',
                 headers: headers,
-                body: 'url=' + encodeURIComponent('https://' + this.host + '/search?' + params) + '&V=web'
+                body: new URLSearchParams({ url: target.toString(), V: 'web' }).toString()
             }
         );
+        return parseBingActivityResponse(response.text);
     }
 
     async getSearchQueries(count) {
@@ -975,10 +1044,15 @@ class RewardsRunner {
                 return;
             }
             const queries = await this.getSearchQueries(this.config.searchCount);
+            let confirmedPoints = 0;
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 this.log('🔍', '搜索 ' + (i + 1) + '/' + queries.length + ': ' + query);
-                await this.searchOnce(query);
+                const activity = await this.searchOnce(query);
+                if (activity.increment !== null && activity.increment > 0) {
+                    confirmedPoints += activity.increment;
+                    this.log('🟢', 'Bing 搜索积分确认 +' + activity.increment);
+                }
                 if (i + 1 < queries.length) {
                     await this.delay(
                         Math.max(1000, (this.config.searchInterval - 15) * 1000),
@@ -988,6 +1062,9 @@ class RewardsRunner {
             }
             info = await this.getRewardsInfo();
             this.result.search = info.pc.progress + '/' + info.pc.max;
+            if (confirmedPoints > 0 && info.pc.progress === 0) {
+                this.result.search += '（Bing 确认 +' + confirmedPoints + '，面板待同步）';
+            }
         } catch (error) {
             this.result.search = '失败';
             this.log('🔴', '搜索任务失败: ' + error.message);
@@ -1180,6 +1257,8 @@ module.exports = {
     HttpClient: HttpClient,
     RewardsRunner: RewardsRunner,
     extractEmbeddedJson: extractEmbeddedJson,
+    extractBingActivityContext: extractBingActivityContext,
+    parseBingActivityResponse: parseBingActivityResponse,
     parseEarnDashboard: parseEarnDashboard,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,

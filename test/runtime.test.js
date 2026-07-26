@@ -108,7 +108,95 @@ test('Rewards, search, and region requests use isolated cookie clients', functio
         expires: 0
     });
     assert.match(runner.http.jar.getHeader('https://rewards.bing.com/earn'), /WLS=rewards-session/);
-    assert.match(runner.searchHttp.jar.getHeader('https://cn.bing.com/'), /WLS=search-session/);
+    assert.equal(runner.host, 'www.bing.com');
+    assert.match(runner.searchHttp.jar.getHeader('https://www.bing.com/'), /WLS=search-session/);
+});
+
+test('extractBingActivityContext uses the live SERP IG and IID', function () {
+    const context = runtime.extractBingActivityContext(
+        '<script>var _G={IG:"ABCDEF0123456789"};window.data_iid="SERP.5057";</script>'
+    );
+    assert.deepEqual(context, {
+        ig: 'ABCDEF0123456789',
+        iid: 'SERP.5057'
+    });
+});
+
+test('parseBingActivityResponse extracts authenticated reward increments', function () {
+    const result = runtime.parseBingActivityResponse(
+        '<script>{"IsAuthenticated":true,"RewardsIncrement":15,"Balance":4316}</script>'
+    );
+    assert.deepEqual(result, {
+        authenticated: true,
+        increment: 15,
+        balance: 4316
+    });
+    assert.throws(function () {
+        runtime.parseBingActivityResponse('{"IsAuthenticated":false}');
+    }, /未登录 Rewards/);
+});
+
+test('reportBingPageActivity reports with identifiers from the loaded page', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'search-protocol-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    const requests = [];
+    runner.searchHttp.request = async function (url, options) {
+        requests.push({ url: url, options: options });
+        if (requests.length === 1) {
+            return { text: 'var _G={IG:"LIVEIG123"};window.data_iid="SERP.5099";' };
+        }
+        return {
+            text: '{"IsAuthenticated":true,"RewardsIncrement":1,"Balance":4302}'
+        };
+    };
+    const result = await runner.reportBingPageActivity(
+        'https://www.bing.com/search?q=test&form=QBLH&mkt=zh-CN',
+        '7/26/2026'
+    );
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].url, /IG=LIVEIG123/);
+    assert.match(requests[1].url, /IID=SERP\.5099/);
+    assert.match(requests[1].url, /q=test/);
+    assert.match(requests[1].options.body, /V=web/);
+    assert.equal(result.increment, 1);
+});
+
+test('legacy Rewards activity is not submitted without a verification token', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'legacy-protocol-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    runner.getVerificationToken = async function () { return ''; };
+    await assert.rejects(
+        runner.reportActivity('offer', 'hash'),
+        function (error) {
+            return error.code === 'LEGACY_REWARDS_UNAVAILABLE';
+        }
+    );
 });
 
 test('parseHotSearchResponse sanitizes and deduplicates titles', function () {
