@@ -12,6 +12,7 @@
 - `upstream/MicrosoftRewardsAuto-3.0.2.user.js`：抓取的原始源码，未修改。
 - `LICENSE`：MIT License，保留原作者署名。
 - `AUDIT.md`：质量审查、规格矩阵和已知技术债。
+- `docs/QINGLONG.md`：青龙拉取、自动创建任务、定时配置和首次运行教程。
 - `test/`：不联网的运行时、安全与源码完整性测试。
 
 原始源码 SHA-256：
@@ -36,9 +37,9 @@
 微软页面与未公开接口随时可能变化。接口没有明确确认成功时，脚本会报告失败或跳过，
 不会仅因为请求已发出就标记成功。
 
-当前青龙版不会处理必须在浏览器中点击弹窗的“待领取积分”，也不会模拟依赖完整页面
-交互的特殊 Punch Card。普通每日活动和卡片会优先通过 `getuserinfo` 与
-`reportactivity` 接口处理。
+当前青龙版能识别首页待领取积分，并使用页面同款 Server Action 领取后复核余额。
+仍不会模拟依赖完整浏览器交互的特殊 Punch Card。普通每日活动和卡片会优先通过
+`getuserinfo` 与新版 Rewards Server Action 处理。
 
 ## 青龙配置
 
@@ -105,16 +106,16 @@ BING_REWARDS_AUTH_CODE
 
 ## 青龙任务
 
-脚本无需执行 `npm install`。在青龙面板的“订阅管理”中新增订阅，或在青龙终端执行：
+完整步骤见 [青龙安装与运行教程](docs/QINGLONG.md)。脚本无需执行 `npm install`。
+在青龙终端执行：
 
 ```sh
 ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_ql[.]js$' "" "" "main" "js" "" "true" "true"
 ```
 
 该命令只拉取主脚本，并让青龙根据脚本内的 `name` 和 `cron` 元数据自动添加或更新
-“微软积分商城签到（青龙重构版）”任务。默认在每小时的第 7、27、47 分钟执行，即每
-20 分钟一次。若面板全局配置关闭了自动添加任务，请在“配置文件”中设置
-`AutoAddCron="true"`。
+“微软积分商城签到（青龙重构版）”任务。若面板全局配置关闭了自动添加任务，请在
+“配置文件”中设置 `AutoAddCron="true"`。
 
 手动执行命令为：
 
@@ -128,11 +129,11 @@ task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_ql.js
 BING_REWARDS_DRY_RUN=1
 ```
 
-确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。默认每 20 分钟运行一次，
-每轮只执行少量搜索，避免高频请求：
+确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。默认按青龙时区每天
+09:17 运行一次：
 
 ```cron
-7,27,47 * * * *
+17 9 * * *
 ```
 
 本地/青龙 Node.js 验证：

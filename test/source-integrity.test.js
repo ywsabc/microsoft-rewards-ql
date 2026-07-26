@@ -14,7 +14,7 @@ test('main script exposes QingLong auto-task metadata', function () {
         'utf8'
     );
     assert.match(source, /^\s*\*\s+name:\s+微软积分商城签到（青龙重构版）\s*$/m);
-    assert.match(source, /^\s*\*\s+cron:\s+7,27,47 \* \* \* \*\s*$/m);
+    assert.match(source, /^\s*\*\s+cron:\s+17 9 \* \* \*\s*$/m);
     assert.match(source, /path\.join\(__dirname, 'sendNotify\.js'\)/);
     assert.match(source, /path\.join\(__dirname, '\.\.', 'sendNotify\.js'\)/);
 });
