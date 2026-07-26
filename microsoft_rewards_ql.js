@@ -481,6 +481,7 @@ class RewardsRunner {
         // Bing 当前的 Rewards 搜索上报由实际 SERP 页面生成 IG/IID。
         // 使用 www.bing.com 并通过 mkt 锁定中文市场，与上游浏览器脚本一致。
         this.host = 'www.bing.com';
+        this.searchSessionSynced = false;
         this.logs = [];
         this.result = {
             name: this.name,
@@ -510,6 +511,14 @@ class RewardsRunner {
         const data = safeJson(response.text);
         if (!data) throw new Error('接口未返回 JSON: ' + new URL(url).hostname);
         return data;
+    }
+
+    syncRewardsSessionToSearch() {
+        if (this.searchSessionSynced) return;
+        for (const cookie of this.http.jar.cookies) {
+            this.searchHttp.jar.upsert(Object.assign({}, cookie));
+        }
+        this.searchSessionSynced = true;
     }
 
     async refreshOAuth() {
@@ -919,14 +928,8 @@ class RewardsRunner {
             const target = new URL(card.url || '', 'https://rewards.bing.com/');
             if (target.hostname === 'bing.com' || target.hostname.endsWith('.bing.com')) {
                 const activity = await this.reportDailyActivity(target.toString());
-                await this.delay(1000, 3000);
-                const pending = await this.discoverCards();
-                const completed = !pending.some(function (item) {
-                    return item.offerId === card.offerId;
-                });
-                if (!completed) throw new Error('上报后卡片仍显示未完成');
-                const points = activity.increment === null ? '已确认完成' : '+' + activity.increment;
-                this.log('🟢', '每日卡片完成 ' + points);
+                const points = activity.increment === null ? '已接受' : '+' + activity.increment;
+                this.log('🟢', '每日卡片上报' + points);
                 return true;
             }
         } catch (bingError) {
@@ -947,6 +950,7 @@ class RewardsRunner {
     }
 
     async reportDailyActivity(destination) {
+        this.syncRewardsSessionToSearch();
         const target = new URL(destination, 'https://www.bing.com/');
         if (target.hostname === 'bing.com' || target.hostname === 'www.bing.com') {
             target.hostname = 'cn.bing.com';
@@ -1016,15 +1020,43 @@ class RewardsRunner {
             }
             let ok = 0;
             const limited = cards.slice(0, this.config.maxPromos);
+            const submitted = [];
             for (const card of limited) {
                 this.log('🧩', '[' + card.kind + '] ' + (card.title || card.offerId) + ' +' + card.points);
                 await this.delay(3000, 8000);
-                if (await this.claimCard(card)) ok++;
+                if (await this.claimCard(card)) submitted.push(card);
+            }
+            if (submitted.length > 0) {
+                // Rewards 卡片状态存在服务端同步延迟；集中等待后再验证，
+                // 避免刚提交就误判失败并重复上报。
+                await this.delay(10000, 20000);
+                const pending = await this.discoverCards();
+                const pendingIds = new Set(pending.map(function (item) {
+                    return item.offerId;
+                }));
+                ok = submitted.filter(function (item) {
+                    return !pendingIds.has(item.offerId);
+                }).length;
+                if (ok < submitted.length) {
+                    this.log(
+                        '🟡',
+                        '卡片已提交 ' + submitted.length
+                            + ' 个，已确认 ' + ok
+                            + ' 个，其余等待 Rewards 同步'
+                    );
+                }
             }
             if (secondPass) {
                 this.result.promos += '，二扫 ' + ok + '/' + limited.length;
+                if (ok < submitted.length) {
+                    this.result.promos += '（待同步 ' + (submitted.length - ok) + '）';
+                }
             } else {
                 this.result.promos = ok + '/' + limited.length;
+                if (ok < submitted.length) {
+                    this.result.promos += '（已提交，待同步 '
+                        + (submitted.length - ok) + '）';
+                }
             }
         } catch (error) {
             if (!secondPass) this.result.promos = '失败';
@@ -1040,6 +1072,7 @@ class RewardsRunner {
     }
 
     async reportBingPageActivity(destination, dateText) {
+        this.syncRewardsSessionToSearch();
         const target = new URL(destination, 'https://' + this.host + '/');
         if (target.hostname === 'bing.com' || target.hostname === 'cn.bing.com') {
             target.hostname = this.host;
@@ -1175,7 +1208,7 @@ class RewardsRunner {
         }
         if (this.config.dryRun) {
             this.log('🔎', 'dry-run：不刷新 OAuth、不写入令牌状态');
-        } else {
+        } else if (this.config.tasks.has('sign') || this.config.tasks.has('read')) {
             await this.refreshOAuth();
         }
         await this.runSign();

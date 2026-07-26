@@ -211,7 +211,7 @@ test('reportDailyActivity uses the commerce protocol for Rewards cards', async f
     assert.equal(result.increment, 15);
 });
 
-test('claimCard verifies that a reported card disappears from the dashboard', async function () {
+test('claimCard submits Bing Rewards cards through the commerce protocol', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'card-verification-test', cookie: 'WLS=session; _U=auth' },
         {
@@ -230,7 +230,6 @@ test('claimCard verifies that a reported card disappears from the dashboard', as
     runner.reportDailyActivity = async function () {
         return { authenticated: true, increment: 15, balance: 4316 };
     };
-    runner.discoverCards = async function () { return []; };
     const ok = await runner.claimCard({
         offerId: 'offer-1',
         hash: 'hash-1',
