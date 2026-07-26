@@ -89,7 +89,7 @@ BING_REWARDS_AUTH_CODE
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `BING_REWARDS_TASKS` | `sign,read,promos,quiz,search,streak` | 启用的任务 |
+| `BING_REWARDS_TASKS` | `sign,read,promos,quiz,search,streak,claim` | 启用的任务；`claim` 自动领取首页待领取积分 |
 | `BING_REWARDS_LOCK_CN` | `1` | 非大陆出口 IP 时停止 |
 | `BING_REWARDS_DRY_RUN` | `0` | `1` 时只查询，不提交任务 |
 | `BING_REWARDS_NOTIFY` | `1` | 是否调用根目录 `sendNotify.js` |

@@ -45,7 +45,8 @@ const APP = {
 
 const REWARDS = {
     // 上游 v3.0.2 与当前 Rewards 页面使用的 reportActivity Server Action。
-    reportActivityAction: '70babbc81d2724f60d29a95c03b3d739cba77cea92'
+    reportActivityAction: '70babbc81d2724f60d29a95c03b3d739cba77cea92',
+    claimAllPointsAction: '00cf5ba7699f0e920ffcff223f9e48fea78fd49784'
 };
 
 const SEARCH_POOL = [
@@ -299,6 +300,18 @@ function parseEarnDashboard(html) {
     };
 }
 
+function parsePointClaim(html) {
+    const clean = String(html || '').replace(/\\"/g, '"');
+    const pointClaim = extractEmbeddedJson(clean, 'pointClaim', 100000);
+    if (!pointClaim || typeof pointClaim !== 'object') {
+        return { points: 0, entries: [] };
+    }
+    return {
+        points: Math.max(0, Number(pointClaim.points || 0)),
+        entries: Array.isArray(pointClaim.entries) ? pointClaim.entries : []
+    };
+}
+
 function mask(value) {
     const text = String(value || '');
     if (text.length < 12) return text ? '***' : '';
@@ -530,6 +543,7 @@ class RewardsRunner {
             name: this.name,
             startBalance: 0,
             endBalance: 0,
+            claim: '未执行',
             sign: '未执行',
             read: '未执行',
             promos: '未执行',
@@ -1380,6 +1394,76 @@ class RewardsRunner {
         }
     }
 
+    async getClaimablePoints() {
+        const response = await this.http.request('https://rewards.bing.com/', {
+            headers: {
+                'user-agent': UA.pc,
+                referer: 'https://rewards.bing.com/'
+            }
+        });
+        return parsePointClaim(response.text);
+    }
+
+    async claimAllPoints() {
+        const response = await this.http.request(
+            'https://rewards.bing.com/',
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'text/plain;charset=UTF-8',
+                    'next-action': REWARDS.claimAllPointsAction,
+                    accept: 'text/x-component',
+                    origin: 'https://rewards.bing.com',
+                    referer: 'https://rewards.bing.com/'
+                },
+                body: '[]'
+            }
+        );
+        if (!/(?:^|\r?\n)\d+:true(?:\r?\n|$)/.test(response.text.trim())) {
+            throw new Error('领取积分 Server Action 响应未确认');
+        }
+        return true;
+    }
+
+    async runClaim() {
+        if (!this.config.tasks.has('claim')) return;
+        try {
+            const before = await this.getClaimablePoints();
+            this.log('🎁', '待领取积分: ' + before.points);
+            if (this.config.dryRun) {
+                this.result.claim = 'dry-run ' + before.points;
+                return;
+            }
+            if (before.points <= 0) {
+                this.result.claim = '0';
+                return;
+            }
+            const balanceBefore = await this.getRewardsInfo();
+            await this.claimAllPoints();
+            await this.delay(5000, 10000);
+            const after = await this.getClaimablePoints();
+            const info = await this.getRewardsInfo();
+            const balanceDelta = Math.max(
+                0,
+                info.balance - balanceBefore.balance
+            );
+            const claimed = Math.max(
+                balanceDelta,
+                before.points - after.points
+            );
+            if (claimed <= 0 || after.points >= before.points) {
+                this.result.claim = '未确认（仍有 ' + after.points + '）';
+                this.log('🟡', '领取接口已响应，但余额和待领取积分均未变化');
+                return;
+            }
+            this.result.claim = '完成 +' + claimed;
+            this.log('🟢', '待领取积分确认 +' + claimed);
+        } catch (error) {
+            this.result.claim = '失败';
+            this.log('🔴', '领取积分失败: ' + error.message);
+        }
+    }
+
     async run() {
         this.log('🚀', '开始执行');
         try {
@@ -1412,6 +1496,7 @@ class RewardsRunner {
             await this.runPromos(true);
         }
         await this.runStreak();
+        await this.runClaim();
         try {
             const info = await this.getRewardsInfo();
             this.result.endBalance = info.balance;
@@ -1453,7 +1538,7 @@ function parseAccounts() {
 }
 
 function buildConfig() {
-    const taskText = process.env.BING_REWARDS_TASKS || 'sign,read,promos,quiz,search,streak';
+    const taskText = process.env.BING_REWARDS_TASKS || 'sign,read,promos,quiz,search,streak,claim';
     const searchSourceValue = String(process.env.BING_REWARDS_SEARCH_SOURCE || 'hot').trim().toLowerCase();
     if (!['hot', 'auto', 'local', 'offline'].includes(searchSourceValue)) {
         throw new Error('BING_REWARDS_SEARCH_SOURCE 仅支持 hot/auto/local/offline');
@@ -1477,6 +1562,7 @@ function formatSummary(results) {
     return results.map(function (item) {
         const lines = [
             '账号：' + item.name,
+            '领取：' + item.claim,
             '签到：' + item.sign,
             '阅读：' + item.read,
             '活动：' + item.promos,
@@ -1557,6 +1643,7 @@ module.exports = {
     parseBingActivityResponse: parseBingActivityResponse,
     evaluateBingReward: evaluateBingReward,
     parseEarnDashboard: parseEarnDashboard,
+    parsePointClaim: parsePointClaim,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,

@@ -323,6 +323,110 @@ test('reportCardServerAction matches the current Rewards page protocol', async f
     ]);
 });
 
+test('parsePointClaim reads pending points and treats a null model as zero', function () {
+    const pending = [
+        '<script>self.__next_f.push([1,',
+        '\\"type\\":\\"pointsclaim\\",\\"model\\":{\\"pointClaim\\":',
+        '{\\"points\\":420,\\"entries\\":[{\\"category\\":\\"gub\\",',
+        '\\"points\\":420,\\"date\\":\\"2026-07\\"}]}}',
+        ']);</script>'
+    ].join('');
+    assert.deepEqual(runtime.parsePointClaim(pending), {
+        points: 420,
+        entries: [{
+            category: 'gub',
+            points: 420,
+            date: '2026-07'
+        }]
+    });
+    assert.deepEqual(
+        runtime.parsePointClaim(
+            '<script>\\"pointClaim\\":null</script>'
+        ),
+        { points: 0, entries: [] }
+    );
+});
+
+test('claimAllPoints matches the current Rewards claim protocol', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'points-claim-protocol-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['claim']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    let request;
+    runner.http.request = async function (url, options) {
+        request = { url: url, options: options };
+        return {
+            status: 200,
+            headers: { 'content-type': 'text/x-component' },
+            text: '0:{"a":"$@1","f":"","q":"","i":false}\n1:true\n'
+        };
+    };
+    assert.equal(await runner.claimAllPoints(), true);
+    assert.equal(request.url, 'https://rewards.bing.com/');
+    assert.equal(request.options.body, '[]');
+    assert.equal(
+        request.options.headers['next-action'],
+        '00cf5ba7699f0e920ffcff223f9e48fea78fd49784'
+    );
+});
+
+test('runClaim submits only when points are actually pending', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'points-claim-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['claim']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    let claimReads = 0;
+    let balanceReads = 0;
+    let submissions = 0;
+    runner.getClaimablePoints = async function () {
+        claimReads++;
+        return claimReads === 1
+            ? { points: 100, entries: [{ points: 100 }] }
+            : { points: 0, entries: [] };
+    };
+    runner.getRewardsInfo = async function () {
+        balanceReads++;
+        return { balance: balanceReads === 1 ? 1000 : 1100 };
+    };
+    runner.claimAllPoints = async function () {
+        submissions++;
+        return true;
+    };
+    runner.delay = async function () {};
+    await runner.runClaim();
+    assert.equal(submissions, 1);
+    assert.equal(runner.result.claim, '完成 +100');
+
+    runner.getClaimablePoints = async function () {
+        return { points: 0, entries: [] };
+    };
+    await runner.runClaim();
+    assert.equal(submissions, 1);
+    assert.equal(runner.result.claim, '0');
+});
+
 test('claimCard prefers the Rewards Server Action over compatibility APIs', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'card-action-test', cookie: 'WLS=session; _U=auth' },
