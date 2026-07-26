@@ -43,6 +43,9 @@ Bing 与 Rewards 登录会话读取；refreshToken 仍只在当前浏览器会�
 旧版 Rewards 实现可能下发 `tifacfaatcs`，但当前登录会话不一定包含它。扩展不会再
 把该旧 Cookie 当作登录必需字段。
 
+Rewards 认证 Cookie 会因页面版本不同使用 `.MSA.Auth` 或 `_C_Auth`；扩展兼容两种
+会话，不要求二者同时存在。
+
 ## 权限与隐私
 
 - `cookies`：分别读取 Bing 搜索页与 Rewards 页面实际会发送的 Cookie；

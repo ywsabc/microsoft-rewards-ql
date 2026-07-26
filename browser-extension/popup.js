@@ -8,7 +8,8 @@
 // tifacfaatcs was used by an older Rewards implementation, but current
 // sessions do not consistently issue it. Do not reject a signed-in account
 // merely because that legacy anti-forgery cookie is absent.
-const REQUIRED_AUTH_COOKIES = ['_U', '.MSA.Auth'];
+const REQUIRED_SHARED_COOKIES = ['_U'];
+const REWARDS_AUTH_COOKIES = ['.MSA.Auth', '_C_Auth'];
 const SAVED_SETTINGS_KEY = 'qingLongSettings';
 const SAVED_SETTING_IDS = [
     'account-name',
@@ -144,7 +145,8 @@ function cookieValue(header, name) {
 async function fingerprintCookies(rewardsCookie, bingCookie) {
     const stableIdentity = [
         cookieValue(rewardsCookie, '_U'),
-        cookieValue(rewardsCookie, '.MSA.Auth'),
+        cookieValue(rewardsCookie, '.MSA.Auth')
+            || cookieValue(rewardsCookie, '_C_Auth'),
         cookieValue(bingCookie, '_U')
     ].join('\n');
     const bytes = new TextEncoder().encode(stableIdentity);
@@ -181,20 +183,35 @@ async function loadCookies() {
         const names = new Set(rewardsCookies.map(function (cookie) {
             return cookie.name;
         }));
-        const missing = REQUIRED_AUTH_COOKIES.filter(function (name) { return !names.has(name); });
+        const missing = REQUIRED_SHARED_COOKIES.filter(function (name) {
+            return !names.has(name);
+        });
+        const rewardsAuthCookie = REWARDS_AUTH_COOKIES.find(function (name) {
+            return names.has(name);
+        });
         const rewardsU = cookieValue(cachedRewardsCookieHeader, '_U');
         const bingU = cookieValue(cachedBingCookieHeader, '_U');
-        elements['rewards-status'].className = 'session-line ' + (
-            cachedRewardsCookieHeader && !missing.length ? 'ok' : 'error'
+        const rewardsReady = Boolean(
+            cachedRewardsCookieHeader
+            && !missing.length
+            && rewardsAuthCookie
         );
-        elements['rewards-status'].textContent = cachedRewardsCookieHeader && !missing.length
-            ? 'Rewards：已登录，共 ' + rewardsCookies.length + ' 项 Cookie'
-            : 'Rewards：缺少 ' + (missing.join('、') || '登录 Cookie');
+        elements['rewards-status'].className = 'session-line ' + (
+            rewardsReady ? 'ok' : 'error'
+        );
+        elements['rewards-status'].textContent = rewardsReady
+            ? 'Rewards：已登录（' + rewardsAuthCookie + '），共 '
+                + rewardsCookies.length + ' 项 Cookie'
+            : 'Rewards：缺少 ' + (
+                missing.length
+                    ? missing.join('、')
+                    : '.MSA.Auth 或 _C_Auth'
+            );
         elements['bing-status'].className = 'session-line ' + (bingU ? 'ok' : 'error');
         elements['bing-status'].textContent = bingU
             ? 'Bing：已登录，共 ' + bingCookies.length + ' 项 Cookie'
             : 'Bing：缺少 _U，请先登录 www.bing.com';
-        if (!cachedRewardsCookieHeader || missing.length || !bingU) {
+        if (!rewardsReady || !bingU) {
             setMessage(elements.status, '两个站点尚未全部登录，暂不能同步。', false);
             return;
         }

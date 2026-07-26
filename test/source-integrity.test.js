@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.2.0');
+    assert.equal(manifest.version, '2.2.1');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -64,12 +64,16 @@ test('browser extension keeps account tokens in session and persists only opted-
     for (const pattern of forbidden) {
         assert.doesNotMatch(popupSource + '\n' + backgroundSource, pattern);
     }
-    for (const requiredCookie of ['_U', '.MSA.Auth']) {
+    for (const requiredCookie of ['_U', '.MSA.Auth', '_C_Auth']) {
         assert.match(popupSource, new RegExp(requiredCookie.replace('.', '\\.')));
     }
     assert.match(
         popupSource,
-        /const REQUIRED_AUTH_COOKIES = \['_U', '\.MSA\.Auth'\]/
+        /const REQUIRED_SHARED_COOKIES = \['_U'\]/
+    );
+    assert.match(
+        popupSource,
+        /const REWARDS_AUTH_COOKIES = \['\.MSA\.Auth', '_C_Auth'\]/
     );
     assert.match(backgroundSource, /const CLIENT_ID = '0000000040170455'/);
     assert.match(backgroundSource, /chrome\.storage\.session/);

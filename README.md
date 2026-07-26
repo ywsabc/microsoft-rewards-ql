@@ -65,7 +65,7 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 
 - `name`：账号备注。
 - `cookie`：必填。在已登录 `https://rewards.bing.com/` 的浏览器请求头中取得完整
-  `Cookie` 值。
+  `Cookie` 值；认证字段可能是 `.MSA.Auth` 或新版 `_C_Auth`。
 - `searchCookie`：可选但推荐。在已登录 `https://www.bing.com/` 的浏览器请求头中
   取得。未配置时沿用 `cookie`；浏览器扩展会分别读取并自动填写两个站点的 Cookie。
 - `refreshToken`：推荐配置，用于 App 签到和阅读。
