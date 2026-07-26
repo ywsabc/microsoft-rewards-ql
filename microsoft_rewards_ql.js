@@ -918,9 +918,15 @@ class RewardsRunner {
         try {
             const target = new URL(card.url || '', 'https://rewards.bing.com/');
             if (target.hostname === 'bing.com' || target.hostname.endsWith('.bing.com')) {
-                const activity = await this.reportBingPageActivity(target.toString());
-                const points = activity.increment === null ? '已接受' : '+' + activity.increment;
-                this.log('🟢', 'Bing 活动上报' + points);
+                const activity = await this.reportDailyActivity(target.toString());
+                await this.delay(1000, 3000);
+                const pending = await this.discoverCards();
+                const completed = !pending.some(function (item) {
+                    return item.offerId === card.offerId;
+                });
+                if (!completed) throw new Error('上报后卡片仍显示未完成');
+                const points = activity.increment === null ? '已确认完成' : '+' + activity.increment;
+                this.log('🟢', '每日卡片完成 ' + points);
                 return true;
             }
         } catch (bingError) {
@@ -938,6 +944,64 @@ class RewardsRunner {
                 return false;
             }
         }
+    }
+
+    async reportDailyActivity(destination) {
+        const target = new URL(destination, 'https://www.bing.com/');
+        if (target.hostname === 'bing.com' || target.hostname === 'www.bing.com') {
+            target.hostname = 'cn.bing.com';
+        }
+        if (target.hostname !== 'cn.bing.com') {
+            throw new Error('每日卡片目标不是受支持的 Bing 页面');
+        }
+        const ig = crypto.randomBytes(16).toString('hex').toUpperCase();
+        const commonHeaders = {
+            'user-agent': UA.pc,
+            referer: target.toString(),
+            origin: target.origin,
+            accept: '*/*',
+            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        };
+        await this.searchHttp.request(target.toString(), {
+            headers: {
+                'user-agent': UA.pc,
+                referer: 'https://rewards.bing.com/',
+                accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'accept-language': commonHeaders['accept-language']
+            }
+        });
+        const ncheader = new URLSearchParams({
+            ver: String(Date.now()).slice(0, 8),
+            IID: 'commerce.5057',
+            IG: ig
+        });
+        await this.searchHttp.request(
+            target.origin + '/rewardsapp/ncheader?' + ncheader.toString(),
+            {
+                method: 'POST',
+                headers: Object.assign({
+                    'content-type': 'application/x-www-form-urlencoded'
+                }, commonHeaders),
+                body: 'wb=1;i=1;v=1'
+            }
+        );
+        const report = new URLSearchParams({ IG: ig, IID: 'commerce.5067' });
+        for (const name of ['form', 'ocid', 'rnoreward']) {
+            const value = target.searchParams.get(name)
+                || target.searchParams.get(name.toUpperCase());
+            if (value) report.set(name, value);
+        }
+        const response = await this.searchHttp.request(
+            target.origin + '/rewardsapp/reportActivity?' + report.toString(),
+            {
+                method: 'POST',
+                headers: Object.assign({
+                    'content-type': 'application/x-www-form-urlencoded'
+                }, commonHeaders),
+                body: new URLSearchParams({ url: target.toString(), V: 'web' }).toString()
+            }
+        );
+        return parseBingActivityResponse(response.text);
     }
 
     async runPromos(secondPass) {
@@ -1063,7 +1127,14 @@ class RewardsRunner {
             info = await this.getRewardsInfo();
             this.result.search = info.pc.progress + '/' + info.pc.max;
             if (confirmedPoints > 0 && info.pc.progress === 0) {
-                this.result.search += '（Bing 确认 +' + confirmedPoints + '，面板待同步）';
+                this.result.search = '未入账（Bing 返回 +'
+                    + confirmedPoints + '；Rewards 面板 '
+                    + info.pc.progress + '/' + info.pc.max + '）';
+                this.log(
+                    '🟡',
+                    'Bing 已接受搜索上报，但 Rewards 面板未入账；'
+                        + '请确认 Bing 搜索与 Rewards 登录的是同一账号'
+                );
             }
         } catch (error) {
             this.result.search = '失败';

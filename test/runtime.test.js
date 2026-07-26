@@ -174,6 +174,72 @@ test('reportBingPageActivity reports with identifiers from the loaded page', asy
     assert.equal(result.increment, 1);
 });
 
+test('reportDailyActivity uses the commerce protocol for Rewards cards', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'daily-protocol-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    const requests = [];
+    runner.searchHttp.request = async function (url, options) {
+        requests.push({ url: url, options: options });
+        if (requests.length < 3) return { text: '' };
+        return {
+            text: '{"IsAuthenticated":true,"RewardsIncrement":15,"Balance":4316}'
+        };
+    };
+    const result = await runner.reportDailyActivity(
+        'https://www.bing.com/search?q=test&form=ML2W4J&OCID=ML2W4J'
+    );
+    assert.equal(requests.length, 3);
+    assert.match(requests[0].url, /^https:\/\/cn\.bing\.com\/search/);
+    assert.match(requests[1].url, /\/rewardsapp\/ncheader\?/);
+    assert.match(requests[1].url, /IID=commerce\.5057/);
+    assert.match(requests[2].url, /\/rewardsapp\/reportActivity\?/);
+    assert.match(requests[2].url, /IID=commerce\.5067/);
+    assert.match(requests[2].url, /form=ML2W4J/);
+    assert.equal(result.increment, 15);
+});
+
+test('claimCard verifies that a reported card disappears from the dashboard', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'card-verification-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    runner.reportDailyActivity = async function () {
+        return { authenticated: true, increment: 15, balance: 4316 };
+    };
+    runner.discoverCards = async function () { return []; };
+    const ok = await runner.claimCard({
+        offerId: 'offer-1',
+        hash: 'hash-1',
+        kind: 'open_only',
+        url: 'https://www.bing.com/search?q=test'
+    });
+    assert.equal(ok, true);
+});
+
 test('legacy Rewards activity is not submitted without a verification token', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'legacy-protocol-test', cookie: 'WLS=session; _U=auth' },
