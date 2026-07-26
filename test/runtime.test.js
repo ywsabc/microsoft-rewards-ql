@@ -273,7 +273,7 @@ test('reportDailyActivity uses the commerce protocol for Rewards cards', async f
     assert.equal(result.increment, 15);
 });
 
-test('claimCard submits Bing Rewards cards through the commerce protocol', async function () {
+test('reportCardServerAction matches the current Rewards page protocol', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'card-verification-test', cookie: 'WLS=session; _U=auth' },
         {
@@ -289,16 +289,74 @@ test('claimCard submits Bing Rewards cards through the commerce protocol', async
             stateDir: '/tmp/microsoft-rewards-ql-test-state'
         }
     );
-    runner.reportDailyActivity = async function () {
-        return { authenticated: true, increment: 15, balance: 4316 };
+    let request;
+    runner.http.request = async function (url, options) {
+        request = { url: url, options: options };
+        return {
+            status: 200,
+            headers: { 'content-type': 'text/x-component' },
+            text: '0:{"a":"$@1","f":"","q":"","i":false}\n1:true\n'
+        };
     };
-    const ok = await runner.claimCard({
+    const ok = await runner.reportCardServerAction({
         offerId: 'offer-1',
         hash: 'hash-1',
+        type: 11,
+        isPromotional: '$undefined',
         kind: 'open_only',
         url: 'https://www.bing.com/search?q=test'
     });
     assert.equal(ok, true);
+    assert.equal(request.url, 'https://rewards.bing.com/earn');
+    assert.equal(
+        request.options.headers['next-action'],
+        '70babbc81d2724f60d29a95c03b3d739cba77cea92'
+    );
+    assert.deepEqual(JSON.parse(request.options.body), [
+        'hash-1',
+        11,
+        {
+            offerid: 'offer-1',
+            isPromotional: '$undefined',
+            timezoneOffset: '-480'
+        }
+    ]);
+});
+
+test('claimCard prefers the Rewards Server Action over compatibility APIs', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'card-action-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    let serverActions = 0;
+    runner.reportCardServerAction = async function () {
+        serverActions++;
+        return true;
+    };
+    runner.reportDailyActivity = async function () {
+        throw new Error('compatibility API must not run after Server Action success');
+    };
+    const ok = await runner.claimCard({
+        offerId: 'offer-1',
+        hash: 'hash-1',
+        type: 11,
+        isPromotional: '$undefined',
+        kind: 'open_only',
+        url: 'https://www.bing.com/search?q=test'
+    });
+    assert.equal(ok, true);
+    assert.equal(serverActions, 1);
 });
 
 test('discoverCards excludes locked level-benefit activities', async function () {

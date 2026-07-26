@@ -43,6 +43,11 @@ const APP = {
     readOfferId: 'ENUS_readarticle3_30points'
 };
 
+const REWARDS = {
+    // 上游 v3.0.2 与当前 Rewards 页面使用的 reportActivity Server Action。
+    reportActivityAction: '70babbc81d2724f60d29a95c03b3d739cba77cea92'
+};
+
 const SEARCH_POOL = [
     '天气预报', '今日新闻热点', '美食食谱家常菜', '旅游攻略',
     '健康养生知识', '科技资讯', '电影推荐', '股票行情',
@@ -958,6 +963,11 @@ class RewardsRunner {
             offerId: offerId,
             hash: hash,
             kind: kind || this.inferKind(offerId, title),
+            type: item.type === undefined || item.type === null ? 11 : item.type,
+            isPromotional: item.isPromotional === undefined
+                ? '$undefined'
+                : item.isPromotional,
+            form: item.form || '',
             url: item.destinationUrl || item.destination || 'https://rewards.bing.com/'
         };
     }
@@ -988,6 +998,17 @@ class RewardsRunner {
 
     async claimCard(card) {
         if (card.kind === 'quiz' && !this.config.tasks.has('quiz')) return false;
+        try {
+            await this.reportCardServerAction(card);
+            this.log('🟢', 'Rewards 活动提交已由新版页面接口接受');
+            return true;
+        } catch (serverActionError) {
+            this.log(
+                '🟡',
+                'Rewards 新版页面接口失败，尝试兼容接口: '
+                    + serverActionError.message
+            );
+        }
         try {
             const target = new URL(card.url || '', 'https://rewards.bing.com/');
             if (target.hostname === 'bing.com' || target.hostname.endsWith('.bing.com')) {
@@ -1022,6 +1043,42 @@ class RewardsRunner {
                 return false;
             }
         }
+    }
+
+    async reportCardServerAction(card) {
+        const isPromotional = card.isPromotional === undefined
+            ? '$undefined'
+            : String(card.isPromotional);
+        const timezoneOffset = this.config.lockCN
+            ? '-480'
+            : String(new Date().getTimezoneOffset());
+        const body = JSON.stringify([
+            card.hash,
+            card.type === undefined || card.type === null ? 11 : card.type,
+            {
+                offerid: card.offerId,
+                isPromotional: isPromotional,
+                timezoneOffset: timezoneOffset
+            }
+        ]);
+        const response = await this.http.request(
+            'https://rewards.bing.com/earn',
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'text/plain;charset=UTF-8',
+                    'next-action': REWARDS.reportActivityAction,
+                    accept: 'text/x-component',
+                    origin: 'https://rewards.bing.com',
+                    referer: 'https://rewards.bing.com/earn'
+                },
+                body: body
+            }
+        );
+        if (!/(?:^|\r?\n)\d+:true(?:\r?\n|$)/.test(response.text.trim())) {
+            throw new Error('Server Action 响应未确认活动');
+        }
+        return true;
     }
 
     async reportDailyActivity(destination) {
