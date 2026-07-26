@@ -7,7 +7,8 @@
 ## 文件
 
 - `microsoft_rewards_ql.js`：青龙版入口，Node.js 18+，无第三方运行依赖。
-- `browser-extension/`：获取 Rewards Cookie/OAuth Token 并同步青龙的 Manifest V3 扩展。
+- `browser-extension/`：管理多个 Rewards 账号的 Cookie/OAuth Token 并统一同步青龙的
+  Manifest V3 扩展。
 - `upstream/MicrosoftRewardsAuto-3.0.2.user.js`：抓取的原始源码，未修改。
 - `LICENSE`：MIT License，保留原作者署名。
 - `AUDIT.md`：质量审查、规格矩阵和已知技术债。

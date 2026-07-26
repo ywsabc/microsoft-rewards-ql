@@ -13,6 +13,7 @@ function createBackgroundHarness() {
     const session = {};
     const listeners = {};
     const tabUpdates = [];
+    let nextTabId = 40;
     const filterKeys = function (keys) {
         if (!Array.isArray(keys)) return Object.assign({}, session);
         return Object.fromEntries(keys
@@ -31,8 +32,9 @@ function createBackgroundHarness() {
         },
         tabs: {
             create: async function (options) {
-                tabUpdates.push({ id: 41, options: options });
-                return { id: 41 };
+                nextTabId++;
+                tabUpdates.push({ id: nextTabId, options: options });
+                return { id: nextTabId };
             },
             update: async function (id, options) {
                 tabUpdates.push({ id: id, options: options });
@@ -65,12 +67,16 @@ function createBackgroundHarness() {
         chrome: chrome,
         console: console,
         crypto: crypto.webcrypto,
-        fetch: async function () {
+        fetch: async function (url, options) {
+            const code = new URLSearchParams(options.body).get('code');
             return {
                 ok: true,
                 status: 200,
                 json: async function () {
-                    return { access_token: 'access-test', refresh_token: 'refresh-test' };
+                    return {
+                        access_token: 'access-' + code,
+                        refresh_token: 'refresh-' + code
+                    };
                 }
             };
         }
@@ -84,34 +90,98 @@ function createBackgroundHarness() {
             assert.equal(keepAlive, true);
         });
     };
+    const finishOAuth = async function (code) {
+        const callback = new URL('https://login.live.com/oauth20_desktop.srf');
+        callback.searchParams.set('code', code);
+        callback.searchParams.set('state', session.oauthState);
+        await listeners.tabUpdated(session.oauthTabId, { url: callback.toString() });
+    };
     return {
-        listeners: listeners,
+        finishOAuth: finishOAuth,
         send: send,
         session: session,
         tabUpdates: tabUpdates
     };
 }
 
-test('OAuth callback retains and reports the selected Cookie fingerprint', async function () {
+async function capture(harness, name, fingerprint) {
+    return harness.send({
+        type: 'accounts:capture',
+        mode: 'new',
+        name: name,
+        cookieFingerprint: fingerprint,
+        cookie: 'rewards-' + fingerprint,
+        searchCookie: 'search-' + fingerprint
+    });
+}
+
+test('OAuth flow stores a separate refreshToken for every account', async function () {
     const harness = createBackgroundHarness();
-    await harness.send({ type: 'oauth:start', cookieFingerprint: 'account-fingerprint' });
+    const first = await capture(harness, '账号1', 'fingerprint-1');
+    const second = await capture(harness, '账号2', 'fingerprint-2');
 
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: 'fingerprint-1'
+    });
     assert.equal(harness.tabUpdates[0].options.url, 'about:blank');
-    assert.equal(harness.session.oauthStatus, 'pending');
-    assert.equal(harness.session.oauthTabId, 41);
-    assert.equal(harness.session.oauthCookieFingerprint, 'account-fingerprint');
-    assert.match(harness.tabUpdates[1].options.url, /oauth20_authorize\.srf/);
+    assert.equal(harness.session.oauthAccountId, first.account.id);
+    await harness.finishOAuth('authorization-code-1');
 
-    const callback = new URL('https://login.live.com/oauth20_desktop.srf');
-    callback.searchParams.set('code', 'authorization-code');
-    callback.searchParams.set('state', harness.session.oauthState);
-    await harness.listeners.tabUpdated(41, { url: callback.toString() });
+    await harness.send({
+        type: 'oauth:start',
+        accountId: second.account.id,
+        cookieFingerprint: 'fingerprint-2'
+    });
+    await harness.finishOAuth('authorization-code-2');
 
-    const status = await harness.send({ type: 'oauth:status' });
-    const token = await harness.send({ type: 'oauth:get-token' });
-    assert.equal(status.status, 'ready');
-    assert.equal(status.hasRefreshToken, true);
-    assert.equal(status.cookieFingerprint, 'account-fingerprint');
-    assert.equal(token.refreshToken, 'refresh-test');
-    assert.equal(token.cookieFingerprint, 'account-fingerprint');
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(list.accounts.length, 2);
+    assert.equal(list.accounts[0].refreshToken, 'refresh-authorization-code-1');
+    assert.equal(list.accounts[1].refreshToken, 'refresh-authorization-code-2');
+
+    const firstStatus = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    const secondToken = await harness.send({
+        type: 'oauth:get-token',
+        accountId: second.account.id
+    });
+    assert.equal(firstStatus.status, 'ready');
+    assert.equal(firstStatus.cookieFingerprint, 'fingerprint-1');
+    assert.equal(secondToken.refreshToken, 'refresh-authorization-code-2');
+});
+
+test('account remark is unique and updating it rebinds the existing record', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '主账号', 'old-fingerprint');
+    const second = await capture(harness, '备用账号', 'second-fingerprint');
+
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: 'old-fingerprint'
+    });
+    await harness.finishOAuth('old-code');
+
+    const rebound = await capture(harness, '主账号', 'new-fingerprint');
+    assert.equal(rebound.account.id, first.account.id);
+    assert.equal(rebound.account.cookieFingerprint, 'new-fingerprint');
+    assert.equal(rebound.account.refreshToken, '');
+
+    await assert.rejects(
+        harness.send({
+            type: 'accounts:rename',
+            accountId: second.account.id,
+            name: '主账号'
+        }),
+        /账号备注已存在/
+    );
+
+    await harness.send({ type: 'accounts:remove', accountId: first.account.id });
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(list.accounts.length, 1);
+    assert.equal(list.accounts[0].name, '备用账号');
 });

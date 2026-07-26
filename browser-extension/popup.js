@@ -6,23 +6,23 @@
 'use strict';
 
 // tifacfaatcs was used by an older Rewards implementation, but current
-// sessions do not consistently issue it. Do not reject a signed-in account
-// merely because that legacy anti-forgery cookie is absent.
+// sessions do not consistently issue it.
 const REQUIRED_SHARED_COOKIES = ['_U'];
 const REWARDS_AUTH_COOKIES = ['.MSA.Auth', '_C_Auth'];
 const SAVED_SETTINGS_KEY = 'qingLongSettings';
 const SAVED_SETTING_IDS = [
-    'account-name',
     'ql-url',
     'ql-client-id',
     'ql-client-secret'
 ];
 const elements = Object.fromEntries([
     'status', 'rewards-status', 'bing-status', 'refresh-session',
-    'copy-status', 'copy-cookie', 'copy-json', 'account-name',
+    'account-select', 'account-name', 'add-account', 'replace-account',
+    'rename-account', 'remove-account', 'account-status',
+    'copy-status', 'copy-cookie', 'copy-json',
     'start-oauth', 'clear-oauth', 'oauth-status',
     'ql-url', 'ql-client-id', 'ql-client-secret', 'remember-settings',
-    'clear-settings', 'sync-ql'
+    'clear-settings', 'sync-selected-ql', 'sync-ql'
 ].map(function (id) {
     return [id, document.getElementById(id)];
 }));
@@ -31,11 +31,18 @@ let cachedRewardsCookieHeader = '';
 let cachedBingCookieHeader = '';
 let currentCookieFingerprint = '';
 let cookieReady = false;
+let accounts = [];
+let selectedAccountId = '';
 let oauthPoll = null;
 let saveTimer = null;
 
 function setMessage(element, text, ok) {
     element.className = 'message ' + (ok ? 'ok' : 'error');
+    element.textContent = text;
+}
+
+function setNeutralMessage(element, text) {
+    element.className = 'message';
     element.textContent = text;
 }
 
@@ -161,13 +168,90 @@ async function copyText(text, successMessage) {
     setMessage(elements['copy-status'], successMessage, true);
 }
 
+function selectedAccount() {
+    return accounts.find(function (account) {
+        return account.id === selectedAccountId;
+    }) || null;
+}
+
+function accountLabel(account, index) {
+    return (index + 1) + '. ' + account.name + (
+        account.refreshToken ? ' · Token 已获取' : ' · 待授权'
+    );
+}
+
+function updateControls() {
+    const selected = selectedAccount();
+    const browserMatches = Boolean(
+        selected
+        && cookieReady
+        && selected.cookieFingerprint === currentCookieFingerprint
+    );
+    elements['add-account'].disabled = !cookieReady;
+    elements['replace-account'].disabled = !cookieReady || !selected;
+    elements['rename-account'].disabled = !selected;
+    elements['remove-account'].disabled = !selected;
+    elements['copy-cookie'].disabled = !selected;
+    elements['copy-json'].disabled = accounts.length === 0;
+    elements['start-oauth'].disabled = !browserMatches;
+    elements['clear-oauth'].disabled = !selected || !selected.refreshToken;
+    elements['sync-selected-ql'].disabled = !selected || !selected.refreshToken;
+    elements['sync-ql'].disabled = accounts.length === 0;
+}
+
+function renderAccounts() {
+    const previous = selectedAccountId;
+    elements['account-select'].textContent = '';
+    accounts.forEach(function (account, index) {
+        const option = document.createElement('option');
+        option.value = account.id;
+        option.textContent = accountLabel(account, index);
+        elements['account-select'].appendChild(option);
+    });
+    if (accounts.some(function (item) { return item.id === previous; })) {
+        selectedAccountId = previous;
+    } else {
+        const browserAccount = accounts.find(function (item) {
+            return item.cookieFingerprint === currentCookieFingerprint;
+        });
+        selectedAccountId = browserAccount
+            ? browserAccount.id
+            : (accounts[0] ? accounts[0].id : '');
+    }
+    elements['account-select'].value = selectedAccountId;
+    const selected = selectedAccount();
+    if (selected) {
+        elements['account-name'].value = selected.name;
+        const matches = cookieReady
+            && selected.cookieFingerprint === currentCookieFingerprint;
+        setMessage(
+            elements['account-status'],
+            '已保存 ' + accounts.length + ' 个账号；所选账号'
+                + (matches ? '与当前浏览器一致。' : '不是当前浏览器账号。'),
+            matches
+        );
+    } else {
+        if (!elements['account-name'].value.trim()) {
+            elements['account-name'].value = '账号1';
+        }
+        setNeutralMessage(elements['account-status'], '尚未保存账号。');
+    }
+    updateControls();
+}
+
+async function loadAccounts(preferredId) {
+    const response = await sendMessage({ type: 'accounts:list' });
+    accounts = Array.isArray(response.accounts) ? response.accounts : [];
+    if (preferredId) selectedAccountId = preferredId;
+    renderAccounts();
+}
+
 async function loadCookies() {
-    elements['copy-cookie'].disabled = true;
-    elements['copy-json'].disabled = true;
-    elements['sync-ql'].disabled = true;
-    elements['start-oauth'].disabled = true;
     cookieReady = false;
     currentCookieFingerprint = '';
+    cachedRewardsCookieHeader = '';
+    cachedBingCookieHeader = '';
+    updateControls();
     try {
         const results = await Promise.all([
             getCookies({ url: 'https://rewards.bing.com/' }),
@@ -212,7 +296,8 @@ async function loadCookies() {
             ? 'Bing：已登录，共 ' + bingCookies.length + ' 项 Cookie'
             : 'Bing：缺少 _U，请先登录 www.bing.com';
         if (!rewardsReady || !bingU) {
-            setMessage(elements.status, '两个站点尚未全部登录，暂不能同步。', false);
+            setMessage(elements.status, '两个站点尚未全部登录，暂不能保存当前账号。', false);
+            renderAccounts();
             return;
         }
         if (rewardsU !== bingU) {
@@ -222,6 +307,7 @@ async function loadCookies() {
                 false
             );
             elements['bing-status'].className = 'session-line error';
+            renderAccounts();
             return;
         }
         currentCookieFingerprint = await fingerprintCookies(
@@ -229,74 +315,117 @@ async function loadCookies() {
             cachedBingCookieHeader
         );
         cookieReady = true;
-        setMessage(elements.status, '两个站点的 Bing 登录会话一致，可以授权和同步。', true);
-        elements['copy-cookie'].disabled = false;
-        elements['copy-json'].disabled = false;
-        elements['sync-ql'].disabled = false;
-        elements['start-oauth'].disabled = false;
+        const browserAccount = accounts.find(function (item) {
+            return item.cookieFingerprint === currentCookieFingerprint;
+        });
+        if (browserAccount) selectedAccountId = browserAccount.id;
+        setMessage(elements.status, '两个站点会话一致，可以添加账号或授权。', true);
+        renderAccounts();
     } catch (error) {
         setMessage(elements.status, '读取失败：' + error.message, false);
+        renderAccounts();
     }
 }
 
-async function getAccountConfig(requireToken) {
-    if (!cookieReady) throw new Error('Cookie 尚未就绪');
-    const tokenResult = await sendMessage({ type: 'oauth:get-token' });
-    if (requireToken && !tokenResult.refreshToken) throw new Error('请先完成 OAuth 授权');
-    if (
-        tokenResult.refreshToken
-        && tokenResult.cookieFingerprint !== currentCookieFingerprint
-    ) {
-        throw new Error('Cookie 账号已切换，请重新选择账号并完成 OAuth 授权');
+async function captureCurrentAccount(mode) {
+    if (!cookieReady || !currentCookieFingerprint) {
+        throw new Error('请先让 Bing 与 Rewards 登录同一账号');
     }
-    return [{
-        name: elements['account-name'].value.trim() || '账号1',
+    if (mode === 'replace' && !selectedAccount()) {
+        throw new Error('请先选择要更新的账号');
+    }
+    const response = await sendMessage({
+        type: 'accounts:capture',
+        mode: mode,
+        accountId: mode === 'replace' ? selectedAccountId : '',
+        name: elements['account-name'].value.trim() || ('账号' + (accounts.length + 1)),
         cookie: cachedRewardsCookieHeader,
         searchCookie: cachedBingCookieHeader,
-        refreshToken: tokenResult.refreshToken || ''
-    }];
+        cookieFingerprint: currentCookieFingerprint
+    });
+    selectedAccountId = response.account.id;
+    await loadAccounts(selectedAccountId);
+    setMessage(
+        elements['account-status'],
+        mode === 'replace'
+            ? '所选账号会话已更新；会话变化时需要重新授权。'
+            : '当前浏览器账号已加入列表。',
+        true
+    );
+    await updateOAuthStatus();
+}
+
+function exportAccounts(requireTokens) {
+    if (!accounts.length) throw new Error('账号列表为空');
+    const missing = accounts.filter(function (account) {
+        return !account.refreshToken;
+    });
+    if (requireTokens && missing.length) {
+        throw new Error(
+            '以下账号尚未获取 Token：'
+            + missing.map(function (item) { return item.name; }).join('、')
+        );
+    }
+    return accounts.map(function (account) {
+        return {
+            name: account.name,
+            cookie: account.cookie,
+            searchCookie: account.searchCookie,
+            refreshToken: account.refreshToken || ''
+        };
+    });
 }
 
 async function updateOAuthStatus() {
+    const selected = selectedAccount();
+    if (!selected) {
+        setNeutralMessage(elements['oauth-status'], '请先添加并选择账号。');
+        updateControls();
+        return;
+    }
     try {
-        const result = await sendMessage({ type: 'oauth:status' });
+        const result = await sendMessage({
+            type: 'oauth:status',
+            accountId: selected.id
+        });
         if (result.status === 'ready') {
-            if (!currentCookieFingerprint) {
-                setMessage(elements['oauth-status'], '请先完成两个站点的登录检查。', false);
-            } else if (result.cookieFingerprint !== currentCookieFingerprint) {
-                setMessage(
-                    elements['oauth-status'],
-                    'Cookie 账号已经变化，旧 Token 已失效，请重新选择账号授权。',
-                    false
-                );
-            } else {
-                setMessage(
-                    elements['oauth-status'],
-                    'refreshToken 已获取，并已绑定当前 Cookie 会话。',
-                    true
-                );
-            }
+            await loadAccounts(selected.id);
+            const matches = cookieReady
+                && selectedAccount().cookieFingerprint === currentCookieFingerprint;
+            setMessage(
+                elements['oauth-status'],
+                'refreshToken 已获取并绑定“' + selectedAccount().name + '”'
+                    + (matches ? '。' : '；当前浏览器已切换到其他账号。'),
+                true
+            );
             if (oauthPoll) clearInterval(oauthPoll);
             oauthPoll = null;
         } else if (result.status === 'pending') {
-            elements['oauth-status'].className = 'message';
-            elements['oauth-status'].textContent = '等待 Microsoft 授权完成…';
+            setNeutralMessage(
+                elements['oauth-status'],
+                '正在等待“' + selected.name + '”完成 Microsoft 授权…'
+            );
         } else if (result.status === 'error') {
             setMessage(elements['oauth-status'], 'OAuth 失败：' + result.error, false);
             if (oauthPoll) clearInterval(oauthPoll);
             oauthPoll = null;
         } else {
-            elements['oauth-status'].className = 'message';
-            elements['oauth-status'].textContent = '尚未获取 Token。';
+            setNeutralMessage(
+                elements['oauth-status'],
+                '“' + selected.name + '”尚未获取 Token。'
+            );
         }
     } catch (error) {
         setMessage(elements['oauth-status'], error.message, false);
     }
+    updateControls();
 }
 
 function normalizePanelUrl(value) {
     const url = new URL(String(value || '').trim());
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('青龙地址必须是 HTTP 或 HTTPS');
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error('青龙地址必须是 HTTP 或 HTTPS');
+    }
     return url.origin;
 }
 
@@ -322,7 +451,10 @@ function removeOriginPermission(origin) {
 async function qlRequest(origin, path, token, options) {
     const headers = Object.assign({}, (options && options.headers) || {});
     if (token) headers.authorization = 'Bearer ' + token;
-    const response = await fetch(origin + path, Object.assign({}, options || {}, { headers: headers }));
+    const response = await fetch(
+        origin + path,
+        Object.assign({}, options || {}, { headers: headers })
+    );
     const data = await response.json().catch(function () { return {}; });
     if (!response.ok || data.code !== 200) {
         throw new Error(data.message || ('青龙 HTTP ' + response.status));
@@ -339,8 +471,9 @@ async function upsertEnv(origin, apiToken, name, value, remarks) {
     const current = (Array.isArray(matches) ? matches : []).find(function (item) {
         return item.name === name;
     });
+    const currentId = current && (current.id || current._id);
     const body = current
-        ? { id: current.id, name: name, value: value, remarks: remarks }
+        ? { id: currentId, name: name, value: value, remarks: remarks }
         : [{ name: name, value: value, remarks: remarks }];
     await qlRequest(origin, '/open/envs', apiToken, {
         method: current ? 'PUT' : 'POST',
@@ -349,55 +482,247 @@ async function upsertEnv(origin, apiToken, name, value, remarks) {
     });
 }
 
-async function syncToQingLong() {
+async function getQingLongAccounts(origin, apiToken) {
+    const matches = await qlRequest(
+        origin,
+        '/open/envs?searchValue=' + encodeURIComponent('BING_REWARDS_ACCOUNTS'),
+        apiToken
+    );
+    const current = (Array.isArray(matches) ? matches : []).find(function (item) {
+        return item.name === 'BING_REWARDS_ACCOUNTS';
+    });
+    if (!current || !String(current.value || '').trim()) return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(current.value);
+    } catch (_) {
+        throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是有效 JSON');
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是数组');
+    }
+    return parsed.filter(function (item) {
+        return item && typeof item === 'object' && item.name && item.cookie;
+    }).map(function (item) {
+        return {
+            name: String(item.name),
+            cookie: String(item.cookie),
+            searchCookie: String(item.searchCookie || item.cookie),
+            refreshToken: String(item.refreshToken || item.refresh_token || '')
+        };
+    });
+}
+
+function mergeAccountByRemark(existing, incoming) {
+    const result = existing.slice();
+    const key = incoming.name.trim().toLocaleLowerCase();
+    const index = result.findIndex(function (item) {
+        return item.name.trim().toLocaleLowerCase() === key;
+    });
+    if (index >= 0) result[index] = incoming;
+    else result.push(incoming);
+    return result;
+}
+
+async function deleteStaleIndexedEnvs(origin, apiToken, accountCount) {
+    const matches = await qlRequest(
+        origin,
+        '/open/envs?searchValue=' + encodeURIComponent('bing_'),
+        apiToken
+    );
+    const staleIds = (Array.isArray(matches) ? matches : []).filter(function (item) {
+        const match = String(item.name || '').match(
+            /^bing_(?:ck|search_ck|token)_(\d+)$/
+        );
+        return match
+            && Number(match[1]) > accountCount
+            && String(item.remarks || '').startsWith('由浏览器扩展同步');
+    }).map(function (item) {
+        return item.id || item._id;
+    }).filter(Boolean);
+    if (!staleIds.length) return 0;
+    await qlRequest(origin, '/open/envs', apiToken, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(staleIds)
+    });
+    return staleIds.length;
+}
+
+async function syncToQingLong(mode) {
     const origin = normalizePanelUrl(elements['ql-url'].value);
     const clientId = elements['ql-client-id'].value.trim();
     const clientSecret = elements['ql-client-secret'].value;
-    if (!clientId || !clientSecret) throw new Error('请填写青龙 OpenAPI Client ID 和 Secret');
-    const pendingText = '正在申请青龙地址权限并开始同步…';
+    if (!clientId || !clientSecret) {
+        throw new Error('请填写青龙 OpenAPI Client ID 和 Secret');
+    }
+    await loadAccounts(selectedAccountId);
+    let syncAccounts;
+    if (mode === 'selected') {
+        const selected = selectedAccount();
+        if (!selected || !selected.refreshToken) {
+            throw new Error('所选账号尚未获取 Token');
+        }
+        syncAccounts = [{
+            name: selected.name,
+            cookie: selected.cookie,
+            searchCookie: selected.searchCookie,
+            refreshToken: selected.refreshToken
+        }];
+    } else {
+        syncAccounts = exportAccounts(true);
+    }
+    const pendingText = mode === 'selected'
+        ? '正在按备注同步所选账号“' + syncAccounts[0].name + '”…'
+        : '正在覆盖同步 ' + syncAccounts.length + ' 个账号到青龙…';
     setMessage(elements['copy-status'], pendingText, true);
     chrome.storage.session.set({
         lastSyncStatus: { text: pendingText, ok: true, time: Date.now() }
     }).catch(function () {});
-    // 独立扩展小窗不会像 action 临时弹层一样在权限确认时被销毁。
-    // permissions.request 保持为本次点击后的第一个异步等待。
     await requestOriginPermission(origin);
     await saveSettings();
-    const accounts = await getAccountConfig(true);
-    const query = new URLSearchParams({ client_id: clientId, client_secret: clientSecret });
-    const tokenData = await qlRequest(origin, '/open/auth/token?' + query.toString(), '');
+    const query = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret
+    });
+    const tokenData = await qlRequest(
+        origin,
+        '/open/auth/token?' + query.toString(),
+        ''
+    );
     const apiToken = tokenData.token;
-    await upsertEnv(origin, apiToken, 'BING_REWARDS_ACCOUNTS', JSON.stringify(accounts), '由浏览器扩展同步');
-    await upsertEnv(origin, apiToken, 'bing_ck_1', accounts[0].cookie, '由浏览器扩展同步');
-    await upsertEnv(origin, apiToken, 'bing_search_ck_1', accounts[0].searchCookie, '由浏览器扩展同步');
-    await upsertEnv(origin, apiToken, 'bing_token_1', accounts[0].refreshToken, '由浏览器扩展同步');
-    await recordSyncStatus('同步成功：Rewards Cookie、Bing Cookie 和 Token 均已写入青龙。', true);
+    if (mode === 'selected') {
+        const existing = await getQingLongAccounts(origin, apiToken);
+        syncAccounts = mergeAccountByRemark(existing, syncAccounts[0]);
+    }
+    await upsertEnv(
+        origin,
+        apiToken,
+        'BING_REWARDS_ACCOUNTS',
+        JSON.stringify(syncAccounts),
+        '由浏览器扩展同步'
+    );
+    for (let index = 0; index < syncAccounts.length; index++) {
+        const account = syncAccounts[index];
+        const suffix = String(index + 1);
+        const accountRemarks = '由浏览器扩展同步｜' + account.name;
+        await upsertEnv(
+            origin, apiToken, 'bing_ck_' + suffix,
+            account.cookie, accountRemarks
+        );
+        await upsertEnv(
+            origin, apiToken, 'bing_search_ck_' + suffix,
+            account.searchCookie, accountRemarks
+        );
+        await upsertEnv(
+            origin, apiToken, 'bing_token_' + suffix,
+            account.refreshToken, accountRemarks
+        );
+    }
+    const removed = await deleteStaleIndexedEnvs(
+        origin,
+        apiToken,
+        syncAccounts.length
+    );
+    await recordSyncStatus(
+        '同步成功：青龙现有 ' + syncAccounts.length + ' 个账号'
+            + (removed ? '，清理 ' + removed + ' 个旧编号变量。' : '。'),
+        true
+    );
 }
 
+elements['account-select'].addEventListener('change', function () {
+    selectedAccountId = elements['account-select'].value;
+    renderAccounts();
+    updateOAuthStatus();
+});
+
+elements['add-account'].addEventListener('click', function () {
+    elements['add-account'].disabled = true;
+    captureCurrentAccount('new').catch(function (error) {
+        setMessage(elements['account-status'], error.message, false);
+    }).finally(updateControls);
+});
+
+elements['replace-account'].addEventListener('click', function () {
+    elements['replace-account'].disabled = true;
+    captureCurrentAccount('replace').catch(function (error) {
+        setMessage(elements['account-status'], error.message, false);
+    }).finally(updateControls);
+});
+
+elements['rename-account'].addEventListener('click', function () {
+    const selected = selectedAccount();
+    if (!selected) return;
+    sendMessage({
+        type: 'accounts:rename',
+        accountId: selected.id,
+        name: elements['account-name'].value
+    }).then(function (response) {
+        return loadAccounts(response.account.id);
+    }).then(function () {
+        setMessage(elements['account-status'], '账号备注已保存。', true);
+    }).catch(function (error) {
+        setMessage(elements['account-status'], error.message, false);
+    });
+});
+
+elements['remove-account'].addEventListener('click', function () {
+    const selected = selectedAccount();
+    if (!selected) return;
+    if (!confirm('删除“' + selected.name + '”及其临时 Cookie/Token？')) return;
+    sendMessage({
+        type: 'accounts:remove',
+        accountId: selected.id
+    }).then(function () {
+        selectedAccountId = '';
+        return loadAccounts();
+    }).then(updateOAuthStatus).catch(function (error) {
+        setMessage(elements['account-status'], error.message, false);
+    });
+});
+
 elements['copy-cookie'].addEventListener('click', function () {
-    if (cachedRewardsCookieHeader) copyText(
-        cachedRewardsCookieHeader,
-        'Rewards Cookie 已复制；完整配置请复制账号 JSON。'
+    const selected = selectedAccount();
+    if (!selected) return;
+    copyText(
+        selected.cookie,
+        '“' + selected.name + '”的 Rewards Cookie 已复制。'
     ).catch(function (error) {
         setMessage(elements['copy-status'], error.message, false);
     });
 });
 
 elements['copy-json'].addEventListener('click', function () {
-    getAccountConfig(false).then(function (config) {
-        return copyText(JSON.stringify(config, null, 2), '账号 JSON 已复制。');
-    }).catch(function (error) {
+    try {
+        copyText(
+            JSON.stringify(exportAccounts(false), null, 2),
+            accounts.length + ' 个账号 JSON 已复制。'
+        ).catch(function (error) {
+            setMessage(elements['copy-status'], error.message, false);
+        });
+    } catch (error) {
         setMessage(elements['copy-status'], error.message, false);
-    });
+    }
 });
 
 elements['start-oauth'].addEventListener('click', function () {
-    if (!cookieReady || !currentCookieFingerprint) {
-        setMessage(elements['oauth-status'], '请先让 Bing 与 Rewards 登录同一账号。', false);
+    const selected = selectedAccount();
+    if (!selected || !cookieReady) {
+        setMessage(elements['oauth-status'], '请先添加并选择当前浏览器账号。', false);
+        return;
+    }
+    if (selected.cookieFingerprint !== currentCookieFingerprint) {
+        setMessage(
+            elements['oauth-status'],
+            '浏览器当前账号与所选账号不一致，请切换账号或更新所选会话。',
+            false
+        );
         return;
     }
     sendMessage({
         type: 'oauth:start',
+        accountId: selected.id,
         cookieFingerprint: currentCookieFingerprint
     }).then(function () {
         updateOAuthStatus();
@@ -410,13 +735,20 @@ elements['start-oauth'].addEventListener('click', function () {
 
 elements['refresh-session'].addEventListener('click', function () {
     elements['refresh-session'].disabled = true;
-    loadCookies().then(updateOAuthStatus).finally(function () {
+    loadAccounts(selectedAccountId).then(loadCookies).then(updateOAuthStatus).finally(function () {
         elements['refresh-session'].disabled = false;
     });
 });
 
 elements['clear-oauth'].addEventListener('click', function () {
-    sendMessage({ type: 'oauth:clear' }).then(updateOAuthStatus).catch(function (error) {
+    const selected = selectedAccount();
+    if (!selected) return;
+    sendMessage({
+        type: 'oauth:clear',
+        accountId: selected.id
+    }).then(function () {
+        return loadAccounts(selected.id);
+    }).then(updateOAuthStatus).catch(function (error) {
         setMessage(elements['oauth-status'], error.message, false);
     });
 });
@@ -437,7 +769,7 @@ elements['clear-settings'].addEventListener('click', function () {
         try {
             if (savedOrigin) await removeOriginPermission(normalizePanelUrl(savedOrigin));
         } catch (_) {}
-        for (const id of SAVED_SETTING_IDS) elements[id].value = id === 'account-name' ? '账号1' : '';
+        for (const id of SAVED_SETTING_IDS) elements[id].value = '';
         elements['remember-settings'].checked = false;
         await recordSyncStatus('已清除保存的青龙连接信息。', true);
     }).catch(function (error) {
@@ -447,11 +779,16 @@ elements['clear-settings'].addEventListener('click', function () {
 
 elements['sync-ql'].addEventListener('click', function () {
     elements['sync-ql'].disabled = true;
-    syncToQingLong().catch(function (error) {
+    syncToQingLong('all').catch(function (error) {
         recordSyncStatus('同步失败：' + error.message, false).catch(function () {});
-    }).finally(function () {
-        elements['sync-ql'].disabled = !cookieReady;
-    });
+    }).finally(updateControls);
+});
+
+elements['sync-selected-ql'].addEventListener('click', function () {
+    elements['sync-selected-ql'].disabled = true;
+    syncToQingLong('selected').catch(function (error) {
+        recordSyncStatus('同步失败：' + error.message, false).catch(function () {});
+    }).finally(updateControls);
 });
 
 async function initialize() {
@@ -461,6 +798,7 @@ async function initialize() {
         setMessage(elements['copy-status'], '读取保存信息失败：' + error.message, false);
     }
     await restoreSyncStatus().catch(function () {});
+    await loadAccounts();
     await loadCookies();
     await updateOAuthStatus();
 }

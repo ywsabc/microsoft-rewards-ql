@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.2.2');
+    assert.equal(manifest.version, '3.0.0');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -81,25 +81,33 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(backgroundSource, /chrome\.action\.onClicked/);
     assert.match(backgroundSource, /chrome\.windows\.create/);
     assert.match(backgroundSource, /type:\s*'popup'/);
-    assert.match(backgroundSource, /width:\s*480/);
-    assert.match(backgroundSource, /height:\s*760/);
+    assert.match(backgroundSource, /width:\s*500/);
+    assert.match(backgroundSource, /height:\s*800/);
     assert.match(backgroundSource, /prompt:\s*'select_account'/);
     assert.match(backgroundSource, /oauthCookieFingerprint/);
-    assert.match(
-        backgroundSource,
-        /'oauthStatus',\s*'oauthError',\s*'refreshToken',\s*'oauthCookieFingerprint'/
-    );
+    assert.match(backgroundSource, /const ACCOUNT_STORAGE_KEY = 'rewardAccounts'/);
+    assert.match(backgroundSource, /const MAX_ACCOUNTS = 20/);
+    assert.match(backgroundSource, /oauthAccountId/);
+    assert.match(backgroundSource, /accounts:capture/);
+    assert.match(backgroundSource, /accounts:rename/);
+    assert.match(backgroundSource, /accounts:remove/);
     assert.match(backgroundSource, /chrome\.tabs\.create\(\{ url: 'about:blank'/);
     assert.match(backgroundSource, /chrome\.tabs\.update\(tab\.id/);
     assert.match(popupSource, /chrome\.storage\.local/);
     assert.match(popupSource, /searchCookie:\s*cachedBingCookieHeader/);
     assert.match(popupSource, /fingerprintCookies/);
     assert.match(popupSource, /https:\/\/www\.bing\.com\//);
-    assert.match(popupSource, /bing_search_ck_1/);
+    assert.match(popupSource, /'bing_search_ck_' \+ suffix/);
     assert.match(
         popupSource,
-        /const SAVED_SETTING_IDS = \[\s*'account-name',\s*'ql-url',\s*'ql-client-id',\s*'ql-client-secret'\s*\]/
+        /const SAVED_SETTING_IDS = \[\s*'ql-url',\s*'ql-client-id',\s*'ql-client-secret'\s*\]/
     );
+    assert.match(popupSource, /bing_token_' \+ suffix/);
+    assert.match(popupSource, /由浏览器扩展同步｜/);
+    assert.match(popupSource, /deleteStaleIndexedEnvs/);
+    assert.match(popupSource, /getQingLongAccounts/);
+    assert.match(popupSource, /mergeAccountByRemark/);
+    assert.match(popupSource, /syncToQingLong\('selected'\)/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_authorize\.srf/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_token\.srf/);
     assert.match(popupSource, /chrome\.permissions\.request/);

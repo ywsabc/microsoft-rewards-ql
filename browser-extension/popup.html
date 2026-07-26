@@ -13,7 +13,7 @@
         <h1>Rewards 青龙同步</h1>
         <button id="refresh-session" type="button">刷新状态</button>
       </div>
-      <p>这是可持续存在的独立小窗，只有你主动关闭时才会消失。</p>
+      <p>依次切换浏览器账号、保存会话并授权，可一次同步多个账号。</p>
     </header>
 
     <section class="card" aria-labelledby="status-title">
@@ -25,26 +25,42 @@
         <a href="https://rewards.bing.com/earn" target="_blank" rel="noreferrer">打开 Rewards</a>
         <a href="https://www.bing.com/" target="_blank" rel="noreferrer">打开 Bing</a>
       </div>
-      <p class="hint">切换账号后，请在两个站点完成登录，再点“刷新状态”。若会话不一致，插件会阻止同步。</p>
+      <p class="hint">切换账号后，请在两个站点完成登录，再点“刷新状态”。若会话不一致，插件会阻止保存和授权。</p>
+    </section>
+
+    <section class="card" aria-labelledby="accounts-title">
+      <h2 id="accounts-title">1. 账号列表</h2>
+      <label for="account-select">已保存账号</label>
+      <select id="account-select" size="4" aria-describedby="account-status"></select>
+      <label for="account-name">账号备注</label>
+      <input id="account-name" type="text" maxlength="60" value="账号1" autocomplete="off">
+      <div class="actions">
+        <button id="add-account" type="button" class="primary">添加当前账号</button>
+        <button id="replace-account" type="button">更新所选会话</button>
+      </div>
+      <div class="actions">
+        <button id="rename-account" type="button">保存备注</button>
+        <button id="remove-account" type="button" class="danger">删除所选账号</button>
+      </div>
+      <p id="account-status" class="message" role="status" aria-live="polite">尚未保存账号。</p>
+      <p class="hint">“添加当前账号”按 Cookie 会话去重；“更新所选会话”会绑定当前浏览器账号，会话不同时自动清除该账号旧 Token。</p>
     </section>
 
     <section class="card" aria-labelledby="oauth-title">
-      <h2 id="oauth-title">1. 获取 OAuth Token</h2>
-      <p>每次授权都会显示 Microsoft 账号选择页。切换 Cookie 账号后，旧 Token 会自动判定为失效。</p>
+      <h2 id="oauth-title">2. 获取所选账号 Token</h2>
+      <p>浏览器当前账号必须与列表所选账号一致。授权完成后，Token 会写入该账号记录。</p>
       <div class="actions">
-        <button id="start-oauth" type="button" class="primary">选择账号并授权</button>
-        <button id="clear-oauth" type="button">清除临时 Token</button>
+        <button id="start-oauth" type="button" class="primary">授权所选账号</button>
+        <button id="clear-oauth" type="button">清除所选 Token</button>
       </div>
       <p id="oauth-status" class="message" role="status" aria-live="polite">尚未获取 Token。</p>
     </section>
 
     <section class="card" aria-labelledby="export-title">
-      <h2 id="export-title">2. 导出或同步</h2>
-      <label for="account-name">账号备注</label>
-      <input id="account-name" type="text" maxlength="60" value="账号1" autocomplete="off">
+      <h2 id="export-title">3. 导出或同步全部账号</h2>
       <div class="actions">
-        <button id="copy-cookie" type="button">复制 Cookie</button>
-        <button id="copy-json" type="button" class="primary">复制账号 JSON</button>
+        <button id="copy-cookie" type="button">复制所选 Cookie</button>
+        <button id="copy-json" type="button" class="primary">复制全部账号 JSON</button>
       </div>
       <hr>
       <label for="ql-url">青龙地址</label>
@@ -55,13 +71,14 @@
       <input id="ql-client-secret" type="password" autocomplete="off">
       <label class="checkbox-row" for="remember-settings">
         <input id="remember-settings" type="checkbox" checked>
-        保存账号备注和青龙连接信息
+        保存青龙连接信息
       </label>
       <p class="hint">勾选后，青龙地址、Client ID 和 Secret 会保存在本机浏览器扩展存储中。</p>
       <div class="actions">
         <button id="clear-settings" type="button">清除保存信息</button>
-        <button id="sync-ql" type="button" class="primary">保存并同步到青龙</button>
+        <button id="sync-selected-ql" type="button">按备注同步所选</button>
       </div>
+      <button id="sync-ql" type="button" class="primary wide">覆盖同步列表全部账号</button>
       <p id="copy-status" class="message" role="status" aria-live="polite"></p>
     </section>
 
@@ -73,8 +90,8 @@
         <li>没有内容脚本、第三方统计或远程代码。</li>
         <li>导出的 Cookie 可登录你的账号，请像密码一样保管。</li>
         <li>插件分别读取 <code>www.bing.com</code> 与 <code>rewards.bing.com</code> 的 Cookie，并检查登录会话是否一致。</li>
-        <li>Cookie 只保留在当前小窗内存；refreshToken 仅暂存在
-          <code>chrome.storage.session</code>，都不会长期保存。</li>
+        <li>多账号 Cookie 和 refreshToken 仅暂存在
+          <code>chrome.storage.session</code>；关闭小窗不会丢失，浏览器重启、扩展更新或停用后清除。</li>
         <li>勾选保存后，青龙地址、OpenAPI Client ID 和 Secret 保存在
           <code>chrome.storage.local</code>，不会发送到其他服务器。</li>
         <li>点击“清除保存信息”会删除连接信息并撤销对应青龙地址权限。</li>
