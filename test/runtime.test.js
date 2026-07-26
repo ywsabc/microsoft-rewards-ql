@@ -156,7 +156,7 @@ test('reportBingPageActivity reports with identifiers from the loaded page', asy
     runner.searchHttp.request = async function (url, options) {
         requests.push({ url: url, options: options });
         if (requests.length === 1) {
-            return { text: 'var _G={IG:"LIVEIG123"};window.data_iid="SERP.5099";' };
+            return { text: 'var _G={IG:"ABCDEF123"};window.data_iid="SERP.5099";' };
         }
         return {
             text: '{"IsAuthenticated":true,"RewardsIncrement":1,"Balance":4302}'
@@ -167,7 +167,7 @@ test('reportBingPageActivity reports with identifiers from the loaded page', asy
         '7/26/2026'
     );
     assert.equal(requests.length, 2);
-    assert.match(requests[1].url, /IG=LIVEIG123/);
+    assert.match(requests[1].url, /IG=ABCDEF123/);
     assert.match(requests[1].url, /IID=SERP\.5099/);
     assert.match(requests[1].url, /q=test/);
     assert.match(requests[1].options.body, /V=web/);
