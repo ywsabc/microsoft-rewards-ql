@@ -97,6 +97,7 @@ BING_REWARDS_AUTH_CODE
 | `BING_REWARDS_SEARCH_COUNT` | `6` | 每轮最多搜索次数 |
 | `BING_REWARDS_SEARCH_SOURCE` | `hot` | `hot/auto` 使用热搜多源并失败回退；`local/offline` 只用本地词库 |
 | `BING_REWARDS_MAX_PROMOS` | `20` | 每轮最多处理活动卡片数 |
+| `BING_REWARDS_PROMO_RETRY_HOURS` | `12` | 未确认活动卡片的最短重试间隔，避免定时任务重复提交 |
 | `BING_REWARDS_DELAY_SCALE` | `1` | 随机等待倍率；生产环境建议保持 `1` |
 | `BING_REWARDS_STATE_DIR` | 当前目录下 `.state` | 令牌状态目录 |
 

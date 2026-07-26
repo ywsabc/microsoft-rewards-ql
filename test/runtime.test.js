@@ -168,6 +168,36 @@ test('parseBingActivityResponse extracts authenticated reward increments', funct
     }, /未登录 Rewards/);
 });
 
+test('evaluateBingReward confirms points only when the balance increases', function () {
+    assert.deepEqual(
+        runtime.evaluateBingReward({ increment: 1, balance: 100 }, 100),
+        {
+            reportedIncrement: 1,
+            responseBalance: 100,
+            confirmedIncrement: 0,
+            nextBalance: 100
+        }
+    );
+    assert.deepEqual(
+        runtime.evaluateBingReward({ increment: 1, balance: 103 }, 100),
+        {
+            reportedIncrement: 1,
+            responseBalance: 103,
+            confirmedIncrement: 3,
+            nextBalance: 103
+        }
+    );
+    assert.deepEqual(
+        runtime.evaluateBingReward({ increment: 1, balance: null }, 100),
+        {
+            reportedIncrement: 1,
+            responseBalance: null,
+            confirmedIncrement: 0,
+            nextBalance: 100
+        }
+    );
+});
+
 test('reportBingPageActivity reports with identifiers from the loaded page', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'search-protocol-test', cookie: 'WLS=session; _U=auth' },
@@ -271,6 +301,129 @@ test('claimCard submits Bing Rewards cards through the commerce protocol', async
     assert.equal(ok, true);
 });
 
+test('discoverCards excludes locked level-benefit activities', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'locked-card-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 10,
+            promoRetryHours: 12,
+            stateDir: '/tmp/microsoft-rewards-ql-locked-card-' + process.pid
+        }
+    );
+    runner.getDashboard = async function () {
+        return {
+            morePromotions: [
+                {
+                    title: 'locked',
+                    points: 15,
+                    offerId: 'locked-offer',
+                    hash: 'hash-1',
+                    isLocked: true,
+                    isUnlocked: false
+                },
+                {
+                    title: 'available',
+                    points: 15,
+                    offerId: 'available-offer',
+                    hash: 'hash-2',
+                    isLocked: false,
+                    isUnlocked: true,
+                    destination: 'https://www.bing.com/search?q=test'
+                }
+            ]
+        };
+    };
+    const cards = await runner.discoverCards();
+    assert.deepEqual(cards.map(function (card) { return card.offerId; }), [
+        'available-offer'
+    ]);
+});
+
+test('runPromos cools down an unconfirmed card after one submission', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'promo-cooldown-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            promoRetryHours: 12,
+            stateDir: '/tmp/microsoft-rewards-ql-promo-cooldown-' + process.pid
+        }
+    );
+    const card = {
+        title: 'cooldown card',
+        points: 15,
+        offerId: 'cooldown-offer',
+        hash: 'hash',
+        kind: 'open_only',
+        url: 'https://www.bing.com/search?q=test'
+    };
+    let submissions = 0;
+    runner.stateStore.save = function () {};
+    runner.discoverCards = async function () { return [card]; };
+    runner.claimCard = async function () {
+        submissions++;
+        return true;
+    };
+    runner.delay = async function () {};
+
+    await runner.runPromos(false);
+    await runner.runPromos(false);
+    assert.equal(submissions, 1);
+    assert.match(runner.result.promos, /冷却跳过 1/);
+});
+
+test('the second promo scan never submits a new card', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'promo-second-pass-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            promoRetryHours: 12,
+            stateDir: '/tmp/microsoft-rewards-ql-promo-second-' + process.pid
+        }
+    );
+    let submissions = 0;
+    runner.discoverCards = async function () {
+        return [{
+            title: 'new card',
+            points: 15,
+            offerId: 'new-offer',
+            hash: 'hash',
+            kind: 'open_only',
+            url: 'https://www.bing.com/search?q=test'
+        }];
+    };
+    runner.claimCard = async function () {
+        submissions++;
+        return true;
+    };
+    await runner.runPromos(true);
+    assert.equal(submissions, 0);
+    assert.match(runner.result.promos, /二扫无待确认/);
+});
+
 test('legacy Rewards activity is not submitted without a verification token', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'legacy-protocol-test', cookie: 'WLS=session; _U=auth' },
@@ -347,6 +500,7 @@ test('buildConfig supports hot and local search sources', function () {
     assert.equal(runtime.buildConfig().searchSource, 'local');
     process.env.BING_REWARDS_SEARCH_SOURCE = 'auto';
     assert.equal(runtime.buildConfig().searchSource, 'hot');
+    assert.equal(runtime.buildConfig().promoRetryHours, 12);
     if (previous === undefined) delete process.env.BING_REWARDS_SEARCH_SOURCE;
     else process.env.BING_REWARDS_SEARCH_SOURCE = previous;
 });

@@ -200,6 +200,37 @@ function parseBingActivityResponse(html) {
     };
 }
 
+function evaluateBingReward(activity, previousBalance) {
+    const hasReportedIncrement = activity
+        && activity.increment !== null
+        && activity.increment !== undefined;
+    const hasResponseBalance = activity
+        && activity.balance !== null
+        && activity.balance !== undefined;
+    const reportedIncrement = hasReportedIncrement
+        && Number.isFinite(Number(activity.increment))
+        ? Number(activity.increment)
+        : null;
+    const responseBalance = hasResponseBalance
+        && Number.isFinite(Number(activity.balance))
+        ? Number(activity.balance)
+        : null;
+    const baseline = Number.isFinite(Number(previousBalance))
+        ? Number(previousBalance)
+        : null;
+    const confirmedIncrement = responseBalance !== null && baseline !== null
+        ? Math.max(0, responseBalance - baseline)
+        : 0;
+    return {
+        reportedIncrement: reportedIncrement,
+        responseBalance: responseBalance,
+        confirmedIncrement: confirmedIncrement,
+        nextBalance: responseBalance !== null && baseline !== null
+            ? Math.max(baseline, responseBalance)
+            : baseline
+    };
+}
+
 function extractEmbeddedJson(text, key, maxLength) {
     const marker = '"' + key + '":';
     let start = String(text || '').indexOf(marker);
@@ -485,6 +516,10 @@ class RewardsRunner {
         this.host = 'www.bing.com';
         this.searchSessionSynced = false;
         this.submittedPromoIds = new Set();
+        this.promoAttempts = this.state.promoAttempts
+            && typeof this.state.promoAttempts === 'object'
+            ? this.state.promoAttempts
+            : {};
         this.logs = [];
         this.result = {
             name: this.name,
@@ -507,6 +542,29 @@ class RewardsRunner {
     async delay(min, max) {
         const value = randomInt(min, max) * this.config.delayScale;
         if (value > 0) await sleep(value);
+    }
+
+    hasRecentPromoAttempt(offerId) {
+        const attempt = this.promoAttempts[String(offerId || '')];
+        if (!attempt || !Number(attempt.time)) return false;
+        const cooldown = Number(this.config.promoRetryHours || 12)
+            * 60 * 60 * 1000;
+        return Date.now() - Number(attempt.time) < cooldown;
+    }
+
+    markPromoAttempt(card) {
+        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        for (const offerId of Object.keys(this.promoAttempts)) {
+            if (Number(this.promoAttempts[offerId].time || 0) < cutoff) {
+                delete this.promoAttempts[offerId];
+            }
+        }
+        this.promoAttempts[card.offerId] = {
+            time: Date.now(),
+            title: String(card.title || '').slice(0, 100)
+        };
+        this.state.promoAttempts = this.promoAttempts;
+        this.stateStore.save();
     }
 
     async jsonRequest(url, options) {
@@ -890,7 +948,8 @@ class RewardsRunner {
         const max = Number(item.pointProgressMax || 0);
         const current = Number(item.pointProgress || 0);
         const completed = item.isCompleted || item.complete || item.completed || (max > 0 && current >= max);
-        if (!offerId || !hash || points <= 0 || completed) return null;
+        const locked = item.isLocked === true || item.isUnlocked === false;
+        if (!offerId || !hash || points <= 0 || completed || locked) return null;
         const haystack = (title + ' ' + offerId).toLowerCase();
         if (SKIP_PATTERNS.some(function (pattern) { return haystack.includes(pattern); })) return null;
         return {
@@ -933,14 +992,17 @@ class RewardsRunner {
             const target = new URL(card.url || '', 'https://rewards.bing.com/');
             if (target.hostname === 'bing.com' || target.hostname.endsWith('.bing.com')) {
                 const activity = await this.reportDailyActivity(target.toString());
-                const points = activity.increment === null ? '已接受' : '+' + activity.increment;
-                this.log('🟢', '每日卡片上报' + points);
+                this.log(
+                    '🟢',
+                    '每日卡片接口已响应'
+                        + (activity.balance === null ? '' : '（余额 ' + activity.balance + '）')
+                );
                 if (activity.increment !== null && activity.increment < card.points) {
                     this.log(
                         '🟡',
-                        '活动接口仅返回 +' + activity.increment
-                            + '，低于卡片标注 +' + card.points
-                            + '，必须以仪表板状态为准'
+                        'RewardsIncrement 字段为 +' + activity.increment
+                            + '，不等于卡片标注 +' + card.points
+                            + '；不据此判定完成，等待仪表板确认'
                     );
                 }
                 return true;
@@ -1031,7 +1093,11 @@ class RewardsRunner {
                 this.result.promos = 'dry-run ' + cards.length + ' 个';
                 return;
             }
-            if (secondPass && this.submittedPromoIds.size > 0) {
+            if (secondPass) {
+                if (this.submittedPromoIds.size === 0) {
+                    this.result.promos += '，二扫无待确认';
+                    return;
+                }
                 const pendingIds = new Set(cards.map(function (item) {
                     return item.offerId;
                 }));
@@ -1047,11 +1113,22 @@ class RewardsRunner {
                 return;
             }
             let ok = 0;
-            const limited = cards.slice(0, this.config.maxPromos);
+            const available = cards.filter(function (card) {
+                return !this.hasRecentPromoAttempt(card.offerId);
+            }, this);
+            const skipped = cards.length - available.length;
+            if (skipped > 0) {
+                this.log(
+                    '🟡',
+                    '活动冷却中，跳过 ' + skipped + ' 个最近已尝试卡片'
+                );
+            }
+            const limited = available.slice(0, this.config.maxPromos);
             const submitted = [];
             for (const card of limited) {
                 this.log('🧩', '[' + card.kind + '] ' + (card.title || card.offerId) + ' +' + card.points);
                 await this.delay(3000, 8000);
+                this.markPromoAttempt(card);
                 if (await this.claimCard(card)) {
                     submitted.push(card);
                     this.submittedPromoIds.add(card.offerId);
@@ -1087,6 +1164,9 @@ class RewardsRunner {
                 if (ok < submitted.length) {
                     this.result.promos += '（上报未确认 '
                         + (submitted.length - ok) + '）';
+                }
+                if (skipped > 0) {
+                    this.result.promos += '，冷却跳过 ' + skipped;
                 }
             }
         } catch (error) {
@@ -1171,15 +1251,32 @@ class RewardsRunner {
                 this.result.search = info.pc.progress + '/' + info.pc.max;
                 return;
             }
+            const searchStartBalance = info.balance;
+            let latestResponseBalance = searchStartBalance;
             const queries = await this.getSearchQueries(this.config.searchCount);
             let confirmedPoints = 0;
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 this.log('🔍', '搜索 ' + (i + 1) + '/' + queries.length + ': ' + query);
                 const activity = await this.searchOnce(query);
-                if (activity.increment !== null && activity.increment > 0) {
-                    confirmedPoints += activity.increment;
-                    this.log('🟢', 'Bing 搜索积分确认 +' + activity.increment);
+                const evaluation = evaluateBingReward(activity, latestResponseBalance);
+                latestResponseBalance = evaluation.nextBalance;
+                if (evaluation.confirmedIncrement > 0) {
+                    confirmedPoints += evaluation.confirmedIncrement;
+                    this.log(
+                        '🟢',
+                        'Bing 搜索余额确认 +' + evaluation.confirmedIncrement
+                    );
+                } else if (
+                    evaluation.reportedIncrement !== null
+                    && evaluation.reportedIncrement > 0
+                ) {
+                    this.log(
+                        '🟡',
+                        '接口 RewardsIncrement 返回 +'
+                            + evaluation.reportedIncrement
+                            + '，但余额未变化，暂不确认入账'
+                    );
                 }
                 if (i + 1 < queries.length) {
                     await this.delay(
@@ -1190,14 +1287,18 @@ class RewardsRunner {
             }
             info = await this.getRewardsInfo();
             this.result.search = info.pc.progress + '/' + info.pc.max;
-            if (confirmedPoints > 0 && info.pc.progress === 0) {
-                this.result.search = '未入账（Bing 返回 +'
-                    + confirmedPoints + '；Rewards 面板 '
-                    + info.pc.progress + '/' + info.pc.max + '）';
+            const dashboardDelta = Math.max(0, info.balance - searchStartBalance);
+            if (dashboardDelta > 0) {
+                this.result.search += '（本轮余额 +' + dashboardDelta + '）';
+            } else if (confirmedPoints === 0) {
+                this.result.search += '（本轮未确认入账）';
+            }
+            if (confirmedPoints > dashboardDelta) {
                 this.log(
                     '🟡',
-                    'Bing 已接受搜索上报，但 Rewards 面板未入账；'
-                        + '请确认 Bing 搜索与 Rewards 登录的是同一账号'
+                    '接口余额曾确认 +' + confirmedPoints
+                        + '，最终面板仅 +' + dashboardDelta
+                        + '；以最终 Rewards 面板为准'
                 );
             }
         } catch (error) {
@@ -1310,6 +1411,7 @@ function buildConfig() {
         searchCount: numberEnv('BING_REWARDS_SEARCH_COUNT', 6, 1, 30),
         searchSource: ['local', 'offline'].includes(searchSourceValue) ? 'local' : 'hot',
         maxPromos: numberEnv('BING_REWARDS_MAX_PROMOS', 20, 0, 100),
+        promoRetryHours: numberEnv('BING_REWARDS_PROMO_RETRY_HOURS', 12, 1, 72),
         stateDir: process.env.BING_REWARDS_STATE_DIR || DEFAULT_STATE_DIR
     };
 }
@@ -1396,6 +1498,7 @@ module.exports = {
     extractEmbeddedJson: extractEmbeddedJson,
     extractBingActivityContext: extractBingActivityContext,
     parseBingActivityResponse: parseBingActivityResponse,
+    evaluateBingReward: evaluateBingReward,
     parseEarnDashboard: parseEarnDashboard,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
