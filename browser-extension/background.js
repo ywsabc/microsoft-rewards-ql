@@ -125,7 +125,9 @@ async function startOAuth(cookieFingerprint) {
         state: state,
         prompt: 'select_account'
     }).toString();
-    const tab = await chrome.tabs.create({ url: url.toString(), active: true });
+    // Create the tab before navigating so the callback listener cannot race
+    // ahead of persisting the tab ID and OAuth state during a fast SSO redirect.
+    const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
     await chrome.storage.session.set({
         oauthState: state,
         oauthTabId: tab.id,
@@ -134,6 +136,7 @@ async function startOAuth(cookieFingerprint) {
         refreshToken: '',
         oauthCookieFingerprint: String(cookieFingerprint || '')
     });
+    await chrome.tabs.update(tab.id, { url: url.toString(), active: true });
 }
 
 chrome.tabs.onUpdated.addListener(async function (tabId, changeInfo) {
@@ -168,7 +171,8 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
             const data = await chrome.storage.session.get([
                 'oauthStatus',
                 'oauthError',
-                'refreshToken'
+                'refreshToken',
+                'oauthCookieFingerprint'
             ]);
             return {
                 ok: true,

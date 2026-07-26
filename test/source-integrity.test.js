@@ -32,7 +32,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '2.2.1');
+    assert.equal(manifest.version, '2.2.2');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -85,6 +85,12 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(backgroundSource, /height:\s*760/);
     assert.match(backgroundSource, /prompt:\s*'select_account'/);
     assert.match(backgroundSource, /oauthCookieFingerprint/);
+    assert.match(
+        backgroundSource,
+        /'oauthStatus',\s*'oauthError',\s*'refreshToken',\s*'oauthCookieFingerprint'/
+    );
+    assert.match(backgroundSource, /chrome\.tabs\.create\(\{ url: 'about:blank'/);
+    assert.match(backgroundSource, /chrome\.tabs\.update\(tab\.id/);
     assert.match(popupSource, /chrome\.storage\.local/);
     assert.match(popupSource, /searchCookie:\s*cachedBingCookieHeader/);
     assert.match(popupSource, /fingerprintCookies/);
