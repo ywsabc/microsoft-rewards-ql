@@ -69,6 +69,42 @@ test('OAuth conflict resolver rejects ambiguous duplicate account bindings', fun
     assert.match(runners[1].oauthBindingError, /多个备注使用了同一个/);
 });
 
+test('App sign-in accepts a zero-point activity without claiming points', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'sign-zero-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['sign']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-test-state'
+        }
+    );
+    runner.accessToken = 'test-access-token';
+    runner.jsonRequest = async function () {
+        return {
+            code: 0,
+            response: {
+                balance: 4491,
+                activity: { type: 103, p: 0, q: 1 },
+                isDuplicate: false
+            }
+        };
+    };
+    const result = await runner.signApp();
+    assert.deepEqual(result, {
+        reportedPoints: 0,
+        balance: 4491,
+        duplicate: false,
+        accepted: true
+    });
+});
+
 test('HttpClient follows redirects and retains response cookies', async function (context) {
     const server = http.createServer(function (request, response) {
         if (request.url === '/start') {

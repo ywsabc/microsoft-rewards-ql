@@ -900,14 +900,16 @@ class RewardsRunner {
                     response.activity.p || response.activity.points || 0
                 ),
                 balance: Number.isFinite(balance) ? balance : null,
-                duplicate: false
+                duplicate: false,
+                accepted: true
             };
         }
         if (response.isDuplicate || response.activity === null) {
             return {
                 reportedPoints: 0,
                 balance: Number.isFinite(balance) ? balance : null,
-                duplicate: true
+                duplicate: true,
+                accepted: true
             };
         }
         return null;
@@ -967,6 +969,9 @@ class RewardsRunner {
                         'App 签到接口返回 +' + appResult.reportedPoints
                             + '，但 App 余额未变化，暂不确认入账'
                     );
+                } else if (appResult.accepted) {
+                    success = true;
+                    this.log('📱', 'App 签到请求已接受，今日无新增积分');
                 }
             }
         } catch (error) {
@@ -986,7 +991,9 @@ class RewardsRunner {
             }
         }
         if (success) {
-            this.result.sign = '完成 +' + total;
+            this.result.sign = total > 0
+                ? '完成 +' + total
+                : '完成 +0（今日无新增积分）';
             if (appUnconfirmed > 0) {
                 this.result.sign += '（App 未确认 +' + appUnconfirmed + '）';
             }
