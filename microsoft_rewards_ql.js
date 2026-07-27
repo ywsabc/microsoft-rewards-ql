@@ -1575,20 +1575,31 @@ class RewardsRunner {
                 referer: 'https://rewards.bing.com/'
             }
         });
-        return parsePointClaim(response.text);
+        const claim = parsePointClaim(response.text);
+        claim.pageUrl = response.url;
+        return claim;
     }
 
-    async claimAllPoints() {
+    async claimAllPoints(pageUrl) {
+        const target = new URL(
+            pageUrl || 'https://rewards.bing.com/dashboard'
+        );
+        if (
+            target.protocol !== 'https:'
+            || target.hostname !== 'rewards.bing.com'
+        ) {
+            throw new Error('领取页面不是受支持的 Rewards 地址');
+        }
         const response = await this.http.request(
-            'https://rewards.bing.com/',
+            target.toString(),
             {
                 method: 'POST',
                 headers: {
                     'content-type': 'text/plain;charset=UTF-8',
                     'next-action': REWARDS.claimAllPointsAction,
                     accept: 'text/x-component',
-                    origin: 'https://rewards.bing.com',
-                    referer: 'https://rewards.bing.com/'
+                    origin: target.origin,
+                    referer: target.toString()
                 },
                 body: '[]'
             }
@@ -1613,7 +1624,7 @@ class RewardsRunner {
                 return;
             }
             const balanceBefore = await this.getRewardsInfo();
-            await this.claimAllPoints();
+            await this.claimAllPoints(before.pageUrl);
             await this.delay(5000, 10000);
             const after = await this.getClaimablePoints();
             const info = await this.getRewardsInfo();

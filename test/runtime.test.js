@@ -416,8 +416,15 @@ test('claimAllPoints matches the current Rewards claim protocol', async function
             text: '0:{"a":"$@1","f":"","q":"","i":false}\n1:true\n'
         };
     };
-    assert.equal(await runner.claimAllPoints(), true);
-    assert.equal(request.url, 'https://rewards.bing.com/');
+    assert.equal(
+        await runner.claimAllPoints('https://rewards.bing.com/dashboard'),
+        true
+    );
+    assert.equal(request.url, 'https://rewards.bing.com/dashboard');
+    assert.equal(
+        request.options.headers.referer,
+        'https://rewards.bing.com/dashboard'
+    );
     assert.equal(request.options.body, '[]');
     assert.equal(
         request.options.headers['next-action'],
@@ -447,20 +454,30 @@ test('runClaim submits only when points are actually pending', async function ()
     runner.getClaimablePoints = async function () {
         claimReads++;
         return claimReads === 1
-            ? { points: 100, entries: [{ points: 100 }] }
+            ? {
+                points: 100,
+                entries: [{ points: 100 }],
+                pageUrl: 'https://rewards.bing.com/dashboard'
+            }
             : { points: 0, entries: [] };
     };
     runner.getRewardsInfo = async function () {
         balanceReads++;
         return { balance: balanceReads === 1 ? 1000 : 1100 };
     };
-    runner.claimAllPoints = async function () {
+    let submittedPageUrl = '';
+    runner.claimAllPoints = async function (pageUrl) {
         submissions++;
+        submittedPageUrl = pageUrl;
         return true;
     };
     runner.delay = async function () {};
     await runner.runClaim();
     assert.equal(submissions, 1);
+    assert.equal(
+        submittedPageUrl,
+        'https://rewards.bing.com/dashboard'
+    );
     assert.equal(runner.result.claim, '完成 +100');
 
     runner.getClaimablePoints = async function () {
