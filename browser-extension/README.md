@@ -24,7 +24,8 @@ Edge 和其他兼容的 Chromium 浏览器。
 2. 点击扩展图标，扩展会打开固定尺寸的独立小窗；再次点击图标会聚焦原小窗；
 3. 确保两个站点登录同一个账号，然后在小窗中点击“刷新状态”；
 4. 填写备注并点击“添加当前账号”，再点击“授权所选账号”。Microsoft 每次都会显示
-   账号选择页；扩展会自动捕获回调并把 `refreshToken` 写入所选账号；
+   账号选择页；扩展会自动捕获回调、核对 Rewards 匿名身份，并把 `refreshToken`
+   写入所选账号；
 5. 在 Bing 与 Rewards 中切换到下一个账号，重复步骤 3、4；
 6. 填写青龙地址及具有 `envs` 权限的 OpenAPI Client ID、Client Secret；
 7. 可以点击“按备注同步所选”，把当前账号合并进青龙已有数组；也可以在所有账号都
@@ -65,6 +66,8 @@ Rewards 认证 Cookie 会因页面版本不同使用 `.MSA.Auth` 或 `_C_Auth`�
   同步结果；勾选保存时使用 `chrome.storage.local` 保存青龙连接信息；
 - `https://bing.com/*`、`https://*.bing.com/*`：Cookie API 所需站点权限；
 - `https://login.live.com/*`：Microsoft OAuth 授权、桌面回调捕获和 Token 兑换；
+- `https://prod.rewardsplatform.microsoft.com/*`：授权后核对匿名 Rewards 账号标识，
+  防止同一个 OAuth 账号误绑到多个备注；
 - 可选 HTTP/HTTPS 主机权限：只在点击同步时针对用户填写的青龙 origin 请求授权；
   权限会保留以避免每次弹窗确认，点击“清除保存信息”时一并撤销。
 
@@ -78,5 +81,9 @@ Rewards 认证 Cookie 会因页面版本不同使用 `.MSA.Auth` 或 `_C_Auth`�
 
 从 `3.0.0` 起，后台按账号 ID 独立保存 Cookie、会话指纹和 refreshToken。一次只进行
 一个 OAuth 流程，但可以在同一浏览器会话内依次为最多 20 个账号授权并统一同步。
+
+从 `3.0.1` 起，授权后会读取 Rewards 匿名账号标识 `ruid`。如果该身份已绑定在另一
+备注下，扩展拒绝保存并提示切换账号。升级后请依次切换 Microsoft 账号，为每个备注
+重新授权一次；同步到青龙的 `oauthRuid` 会由核心脚本再次校验。
 
 导出的 Cookie 等同敏感登录凭据。请勿提交到 GitHub、截图分享或粘贴到不可信网站。

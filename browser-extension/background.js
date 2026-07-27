@@ -10,6 +10,8 @@ const TOKEN_URL = 'https://login.live.com/oauth20_token.srf';
 const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
 const REWARDS_SCOPE = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL';
 const CLIENT_ID = '0000000040170455';
+const REWARDS_DAPI_ME = 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=105';
+const REWARDS_APP_ID = 'SAAndroid/32.6.2110003560';
 const DASHBOARD_PAGE = 'popup.html';
 const ACCOUNT_STORAGE_KEY = 'rewardAccounts';
 const MAX_ACCOUNTS = 20;
@@ -94,6 +96,7 @@ function normalizeAccount(input, index) {
         cookie: cookie,
         searchCookie: searchCookie,
         refreshToken: String(input.refreshToken || ''),
+        oauthRuid: String(input.oauthRuid || ''),
         capturedAt: Number(input.capturedAt || Date.now()),
         tokenAt: Number(input.tokenAt || 0),
         oauthError: String(input.oauthError || '')
@@ -152,6 +155,7 @@ async function captureAccount(input) {
         account = {
             id: randomAccountId(),
             refreshToken: '',
+            oauthRuid: '',
             tokenAt: 0,
             oauthError: ''
         };
@@ -166,6 +170,7 @@ async function captureAccount(input) {
     account.capturedAt = Date.now();
     if (fingerprintChanged) {
         account.refreshToken = '';
+        account.oauthRuid = '';
         account.tokenAt = 0;
         account.oauthError = '浏览器会话已更新，请重新授权';
     }
@@ -232,6 +237,36 @@ async function setFailure(message, oauthSession) {
     await saveAccounts(accounts);
 }
 
+async function inspectOAuthToken(accessToken) {
+    const response = await fetch(REWARDS_DAPI_ME, {
+        headers: {
+            authorization: 'Bearer ' + accessToken,
+            'content-type': 'application/json',
+            'x-rewards-appid': REWARDS_APP_ID,
+            'x-rewards-country': 'cn',
+            'x-rewards-language': 'zh',
+            'x-rewards-os': 'Android',
+            'x-rewards-channel': 'SAAndroid'
+        }
+    });
+    const data = await response.json().catch(function () { return {}; });
+    if (!response.ok) {
+        throw new Error(
+            (data.response && data.response.message)
+            || data.message
+            || ('Rewards 身份校验 HTTP ' + response.status)
+        );
+    }
+    const profile = data.response && data.response.profile;
+    const ruid = String(profile && profile.ruid || '');
+    if (!ruid) throw new Error('Rewards 身份校验缺少 ruid');
+    const rawBalance = data.response && data.response.balance;
+    return {
+        ruid: ruid,
+        balance: Number.isFinite(Number(rawBalance)) ? Number(rawBalance) : null
+    };
+}
+
 async function exchangeCode(code, oauthSession) {
     const body = new URLSearchParams({
         client_id: CLIENT_ID,
@@ -248,6 +283,8 @@ async function exchangeCode(code, oauthSession) {
     if (!response.ok || !data.refresh_token) {
         throw new Error(data.error_description || data.error || ('Token HTTP ' + response.status));
     }
+    if (!data.access_token) throw new Error('Token 响应缺少 access_token');
+    const oauthIdentity = await inspectOAuthToken(data.access_token);
     const accounts = await getAccounts();
     const account = accounts.find(function (item) {
         return item.id === oauthSession.oauthAccountId;
@@ -256,7 +293,19 @@ async function exchangeCode(code, oauthSession) {
     if (account.cookieFingerprint !== oauthSession.oauthCookieFingerprint) {
         throw new Error('账号 Cookie 会话在授权期间发生变化');
     }
+    const duplicate = accounts.find(function (item) {
+        return item.id !== account.id
+            && item.oauthRuid
+            && item.oauthRuid === oauthIdentity.ruid;
+    });
+    if (duplicate) {
+        throw new Error(
+            'OAuth 选择的是已绑定“' + duplicate.name
+            + '”的同一 Microsoft 账号，请切换账号后重新授权'
+        );
+    }
     account.refreshToken = data.refresh_token;
+    account.oauthRuid = oauthIdentity.ruid;
     account.tokenAt = Date.now();
     account.oauthError = '';
     await saveAccounts(accounts);
@@ -366,6 +415,7 @@ async function clearAccountToken(accountId) {
     const account = accounts.find(function (item) { return item.id === id; });
     if (!account) throw new Error('所选账号不存在');
     account.refreshToken = '';
+    account.oauthRuid = '';
     account.tokenAt = 0;
     account.oauthError = '';
     await saveAccounts(accounts);
@@ -422,6 +472,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
             return {
                 ok: true,
                 refreshToken: account ? account.refreshToken : '',
+                oauthRuid: account ? account.oauthRuid : '',
                 cookieFingerprint: account ? account.cookieFingerprint : ''
             };
         }

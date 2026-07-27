@@ -68,12 +68,17 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '3.0.0');
+    assert.equal(manifest.version, '3.0.1');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
         manifest.host_permissions.sort(),
-        ['https://*.bing.com/*', 'https://bing.com/*', 'https://login.live.com/*']
+        [
+            'https://*.bing.com/*',
+            'https://bing.com/*',
+            'https://login.live.com/*',
+            'https://prod.rewardsplatform.microsoft.com/*'
+        ]
     );
     assert.deepEqual(manifest.optional_host_permissions.sort(), ['http://*/*', 'https://*/*']);
     assert.equal(manifest.background.service_worker, 'background.js');
@@ -124,6 +129,8 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(backgroundSource, /const ACCOUNT_STORAGE_KEY = 'rewardAccounts'/);
     assert.match(backgroundSource, /const MAX_ACCOUNTS = 20/);
     assert.match(backgroundSource, /oauthAccountId/);
+    assert.match(backgroundSource, /inspectOAuthToken/);
+    assert.match(backgroundSource, /oauthRuid/);
     assert.match(backgroundSource, /accounts:capture/);
     assert.match(backgroundSource, /accounts:rename/);
     assert.match(backgroundSource, /accounts:remove/);

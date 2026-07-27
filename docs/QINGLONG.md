@@ -83,12 +83,16 @@ BING_REWARDS_ACCOUNTS
     "name": "账号1",
     "cookie": ".MSA.Auth=...; _U=...; ...",
     "searchCookie": "_U=...; MUID=...; ...",
-    "refreshToken": "M.R3_BAY..."
+    "refreshToken": "M.R3_BAY...",
+    "oauthRuid": "由扩展自动同步"
   }
 ]
 ```
 
 Cookie 和 refreshToken 等同账号密码，不要写入脚本、GitHub Issue 或公开日志。
+多账号必须逐个切换 Microsoft 账号并授权。扩展 `3.0.1` 及以上会同步匿名
+`oauthRuid`；脚本执行移动端签到/阅读前还会核对 Cookie 与 DAPI 余额，发现串号便
+停止该账号的移动端任务。
 
 ## 4. 首次安全测试
 

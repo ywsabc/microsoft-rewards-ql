@@ -56,7 +56,8 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
     "name": "账号1",
     "cookie": ".MSA.Auth=...; _U=...; ...",
     "searchCookie": "_U=...; MUID=...; ...",
-    "refreshToken": "M.R3_BAY...."
+    "refreshToken": "M.R3_BAY....",
+    "oauthRuid": "由扩展自动同步"
   },
   {
     "name": "账号2",
@@ -72,6 +73,7 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 - `searchCookie`：可选但推荐。在已登录 `https://www.bing.com/` 的浏览器请求头中
   取得。未配置时沿用 `cookie`；浏览器扩展会分别读取并自动填写两个站点的 Cookie。
 - `refreshToken`：推荐配置，用于 App 签到和阅读。
+- `oauthRuid`：浏览器扩展自动写入的匿名账号标识，用于阻止多账号 Token 串号。
 - `authCode`：可选的一次性授权码或完整 OAuth 回调 URL。兑换成功后，新的
   `refreshToken` 会保存到 `.state`，之后不再需要配置 `authCode`。
 

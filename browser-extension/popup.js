@@ -371,7 +371,8 @@ function exportAccounts(requireTokens) {
             name: account.name,
             cookie: account.cookie,
             searchCookie: account.searchCookie,
-            refreshToken: account.refreshToken || ''
+            refreshToken: account.refreshToken || '',
+            oauthRuid: account.oauthRuid || ''
         };
     });
 }
@@ -508,7 +509,8 @@ async function getQingLongAccounts(origin, apiToken) {
             name: String(item.name),
             cookie: String(item.cookie),
             searchCookie: String(item.searchCookie || item.cookie),
-            refreshToken: String(item.refreshToken || item.refresh_token || '')
+            refreshToken: String(item.refreshToken || item.refresh_token || ''),
+            oauthRuid: String(item.oauthRuid || item.oauth_ruid || '')
         };
     });
 }
@@ -567,7 +569,8 @@ async function syncToQingLong(mode) {
             name: selected.name,
             cookie: selected.cookie,
             searchCookie: selected.searchCookie,
-            refreshToken: selected.refreshToken
+            refreshToken: selected.refreshToken,
+            oauthRuid: selected.oauthRuid || ''
         }];
     } else {
         syncAccounts = exportAccounts(true);

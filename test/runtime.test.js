@@ -17,17 +17,56 @@ test('CookieJar scopes Bing cookies and merges per-request cookies', function ()
 test('parseAccounts accepts multi-account JSON', function () {
     const previous = process.env.BING_REWARDS_ACCOUNTS;
     process.env.BING_REWARDS_ACCOUNTS = JSON.stringify([
-        { name: 'A', cookie: 'MUID=x', searchCookie: 'MUID=search-x', refreshToken: 'r1' },
+        {
+            name: 'A',
+            cookie: 'MUID=x',
+            searchCookie: 'MUID=search-x',
+            refreshToken: 'r1',
+            oauthRuid: 'oauth-user-a'
+        },
         { name: 'B', cookie: 'MUID=y', authCode: 'c2' }
     ]);
     const accounts = runtime.parseAccounts();
     assert.equal(accounts.length, 2);
     assert.equal(accounts[0].refreshToken, 'r1');
+    assert.equal(accounts[0].oauthRuid, 'oauth-user-a');
     assert.equal(accounts[0].searchCookie, 'MUID=search-x');
     assert.equal(accounts[1].searchCookie, 'MUID=y');
     assert.equal(accounts[1].authCode, 'c2');
     if (previous === undefined) delete process.env.BING_REWARDS_ACCOUNTS;
     else process.env.BING_REWARDS_ACCOUNTS = previous;
+});
+
+test('OAuth conflict resolver keeps only the cookie account matching the App balance', function () {
+    const first = {
+        name: '账号1',
+        appAccountInfo: { ruid: 'same-user', balance: 15000 },
+        preflightRewardsInfo: { balance: 4400 },
+        oauthBindingError: ''
+    };
+    const second = {
+        name: '账号2',
+        appAccountInfo: { ruid: 'same-user', balance: 15000 },
+        preflightRewardsInfo: { balance: 15000 },
+        oauthBindingError: ''
+    };
+    runtime.resolveOAuthBindingConflicts([first, second]);
+    assert.match(first.oauthBindingError, /账号2.*同一 Microsoft 账号/);
+    assert.equal(second.oauthBindingError, '');
+});
+
+test('OAuth conflict resolver rejects ambiguous duplicate account bindings', function () {
+    const runners = ['账号1', '账号2'].map(function (name) {
+        return {
+            name: name,
+            appAccountInfo: { ruid: 'same-user', balance: 5000 },
+            preflightRewardsInfo: { balance: 5000 },
+            oauthBindingError: ''
+        };
+    });
+    runtime.resolveOAuthBindingConflicts(runners);
+    assert.match(runners[0].oauthBindingError, /多个备注使用了同一个/);
+    assert.match(runners[1].oauthBindingError, /多个备注使用了同一个/);
 });
 
 test('HttpClient follows redirects and retains response cookies', async function (context) {

@@ -30,6 +30,7 @@ const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
 const REWARDS_SCOPE = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL';
 const TOKEN_URL = 'https://login.live.com/oauth20_token.srf';
 const DEFAULT_STATE_DIR = path.join(__dirname, '.state');
+const OAUTH_BALANCE_TOLERANCE = 1000;
 
 const UA = {
     pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
@@ -528,6 +529,12 @@ class RewardsRunner {
         this.state = this.stateStore.data;
         this.accessToken = '';
         this.refreshToken = this.state.refreshToken || account.refreshToken || '';
+        this.expectedOauthRuid = String(account.oauthRuid || '');
+        this.appAccountInfo = null;
+        this.preflightRewardsInfo = null;
+        this.oauthPreflightDone = false;
+        this.oauthBindingError = '';
+        this.oauthRefreshError = '';
         this.region = 'CN';
         // Bing 当前的 Rewards 搜索上报由实际 SERP 页面生成 IG/IID。
         // 使用 www.bing.com 并通过 mkt 锁定中文市场，与上游浏览器脚本一致。
@@ -604,7 +611,9 @@ class RewardsRunner {
         this.searchSessionSynced = true;
     }
 
-    async refreshOAuth() {
+    async refreshOAuth(options) {
+        const refreshOptions = options || {};
+        this.oauthRefreshError = '';
         const storedToken = this.state.refreshToken || '';
         const configuredToken = this.account.refreshToken || '';
         const candidates = [];
@@ -647,20 +656,54 @@ class RewardsRunner {
                     throw new Error(data.error_description || data.error || '响应缺少 access_token');
                 }
                 this.accessToken = data.access_token;
+                const appAccountInfo = await this.getAppAccountInfo();
+                if (!appAccountInfo || !appAccountInfo.ruid) {
+                    throw new Error('DAPI 未返回 OAuth 账号标识');
+                }
+                if (
+                    this.expectedOauthRuid
+                    && appAccountInfo.ruid !== this.expectedOauthRuid
+                ) {
+                    throw new Error('OAuth Token 与扩展记录的账号标识不一致');
+                }
+                if (
+                    this.preflightRewardsInfo
+                    && Number.isFinite(Number(appAccountInfo.balance))
+                    && Math.abs(
+                        Number(appAccountInfo.balance)
+                            - Number(this.preflightRewardsInfo.balance)
+                    ) > OAUTH_BALANCE_TOLERANCE
+                ) {
+                    throw new Error(
+                        'OAuth Token 的 App 余额与 Rewards Cookie 差异过大'
+                    );
+                }
+                this.appAccountInfo = appAccountInfo;
+                this.oauthRefreshError = '';
                 if (data.refresh_token) {
                     this.refreshToken = data.refresh_token;
-                    this.state.refreshToken = data.refresh_token;
-                    this.state.tokenUpdatedAt = Date.now();
-                    this.stateStore.save();
+                    if (!refreshOptions.deferSave) {
+                        this.saveRefreshToken();
+                    }
                 }
                 this.log('🟢', 'OAuth Token 获取成功（refreshToken ' + mask(this.refreshToken) + '）');
                 return true;
             } catch (error) {
+                this.accessToken = '';
+                this.appAccountInfo = null;
                 lastError = error;
             }
         }
-        this.log('🔴', 'OAuth Token 获取失败: ' + (lastError ? lastError.message : '未知错误'));
+        this.oauthRefreshError = lastError ? lastError.message : '未知错误';
+        this.log('🔴', 'OAuth Token 获取失败: ' + this.oauthRefreshError);
         return false;
+    }
+
+    saveRefreshToken() {
+        if (!this.refreshToken) return;
+        this.state.refreshToken = this.refreshToken;
+        this.state.tokenUpdatedAt = Date.now();
+        this.stateStore.save();
     }
 
     dapiHeaders() {
@@ -672,6 +715,22 @@ class RewardsRunner {
             'x-rewards-ismobile': 'true',
             'x-rewards-country': this.config.lockCN ? 'cn' : this.region.toLowerCase(),
             'x-rewards-language': 'zh'
+        };
+    }
+
+    async getAppAccountInfo() {
+        if (!this.accessToken) return null;
+        const data = await this.jsonRequest(
+            'https://prod.rewardsplatform.microsoft.com/dapi/me'
+                + '?channel=SAAndroid&options=105',
+            { headers: this.dapiHeaders() }
+        );
+        const response = data.response || {};
+        const profile = response.profile || {};
+        const balance = Number(response.balance);
+        return {
+            ruid: String(profile.ruid || ''),
+            balance: Number.isFinite(balance) ? balance : null
         };
     }
 
@@ -834,8 +893,23 @@ class RewardsRunner {
             body: JSON.stringify(body)
         });
         const response = data.response || {};
-        if (response.activity) return Number(response.activity.p || response.activity.points || 0);
-        if (response.isDuplicate || response.activity === null) return 0;
+        const balance = Number(response.balance);
+        if (response.activity) {
+            return {
+                reportedPoints: Number(
+                    response.activity.p || response.activity.points || 0
+                ),
+                balance: Number.isFinite(balance) ? balance : null,
+                duplicate: false
+            };
+        }
+        if (response.isDuplicate || response.activity === null) {
+            return {
+                reportedPoints: 0,
+                balance: Number.isFinite(balance) ? balance : null,
+                duplicate: true
+            };
+        }
         return null;
     }
 
@@ -860,12 +934,40 @@ class RewardsRunner {
         }
         let total = 0;
         let success = false;
+        let appUnconfirmed = 0;
         try {
-            const appPoints = await this.signApp();
-            if (appPoints !== null) {
-                success = true;
-                total += appPoints;
-                this.log('📱', 'App 签到确认 +' + appPoints);
+            const appBalanceBefore = this.appAccountInfo
+                && this.appAccountInfo.balance;
+            const appResult = await this.signApp();
+            if (appResult !== null) {
+                const appInfoAfter = await this.getAppAccountInfo();
+                this.appAccountInfo = appInfoAfter || this.appAccountInfo;
+                const balances = [
+                    appResult.balance,
+                    appInfoAfter && appInfoAfter.balance
+                ].filter(function (value) {
+                    return Number.isFinite(Number(value));
+                }).map(Number);
+                const confirmed = Number.isFinite(Number(appBalanceBefore))
+                    ? Math.max(0, ...balances.map(function (value) {
+                        return value - Number(appBalanceBefore);
+                    }))
+                    : 0;
+                if (confirmed > 0) {
+                    success = true;
+                    total += confirmed;
+                    this.log('📱', 'App 签到余额确认 +' + confirmed);
+                } else if (appResult.duplicate) {
+                    success = true;
+                    this.log('📱', 'App 签到今日已完成，无新增积分');
+                } else if (appResult.reportedPoints > 0) {
+                    appUnconfirmed = appResult.reportedPoints;
+                    this.log(
+                        '🟡',
+                        'App 签到接口返回 +' + appResult.reportedPoints
+                            + '，但 App 余额未变化，暂不确认入账'
+                    );
+                }
             }
         } catch (error) {
             this.log('🟡', 'App 签到失败: ' + error.message);
@@ -883,7 +985,18 @@ class RewardsRunner {
                 this.log('🟡', 'PC 签到失败: ' + error.message);
             }
         }
-        this.result.sign = success ? '完成 +' + total : '失败';
+        if (success) {
+            this.result.sign = '完成 +' + total;
+            if (appUnconfirmed > 0) {
+                this.result.sign += '（App 未确认 +' + appUnconfirmed + '）';
+            }
+        } else if (appUnconfirmed > 0) {
+            this.result.sign = '未确认（App 接口 +' + appUnconfirmed + '）';
+        } else if (this.oauthBindingError) {
+            this.result.sign = '跳过（OAuth 账号不匹配）';
+        } else {
+            this.result.sign = '失败';
+        }
     }
 
     async getReadProgress() {
@@ -919,7 +1032,12 @@ class RewardsRunner {
         });
         const response = data.response || {};
         const activity = response.activity || {};
-        return Number(activity.p || 0);
+        const balance = Number(response.balance);
+        return {
+            reportedPoints: Number(activity.p || 0),
+            balance: Number.isFinite(balance) ? balance : null,
+            duplicate: Boolean(response.isDuplicate)
+        };
     }
 
     async runRead() {
@@ -929,21 +1047,53 @@ class RewardsRunner {
             return;
         }
         if (!this.accessToken) {
-            this.result.read = '跳过（无 Token）';
+            this.result.read = this.oauthBindingError
+                ? '跳过（OAuth 账号不匹配）'
+                : '跳过（无 Token）';
             return;
         }
         try {
+            const appBalanceBefore = this.appAccountInfo
+                && this.appAccountInfo.balance;
             let progress = await this.getReadProgress();
             if (!progress) throw new Error('未找到阅读任务');
             this.log('📖', '阅读进度 ' + progress.progress + '/' + progress.max);
             const remaining = Math.min(10, Math.max(0, progress.max - progress.progress));
+            let reportedPoints = 0;
             for (let i = 0; i < remaining; i++) {
-                const points = await this.readOnce();
-                this.log('📖', '阅读 ' + (i + 1) + '/' + remaining + ' +' + points);
+                const result = await this.readOnce();
+                reportedPoints += result.reportedPoints;
+                this.log(
+                    '📖',
+                    '阅读 ' + (i + 1) + '/' + remaining
+                        + '，接口值 +' + result.reportedPoints
+                );
                 await this.delay(3000, 8000);
             }
             progress = await this.getReadProgress();
             this.result.read = progress ? progress.progress + '/' + progress.max : '已执行，验证失败';
+            const appInfoAfter = await this.getAppAccountInfo();
+            this.appAccountInfo = appInfoAfter || this.appAccountInfo;
+            const confirmed = (
+                Number.isFinite(Number(appBalanceBefore))
+                && appInfoAfter
+                && Number.isFinite(Number(appInfoAfter.balance))
+            ) ? Math.max(
+                    0,
+                    Number(appInfoAfter.balance) - Number(appBalanceBefore)
+                )
+                : 0;
+            if (confirmed > 0) {
+                this.result.read += '（App 余额 +' + confirmed + '）';
+                this.log('🟢', '阅读 App 余额确认 +' + confirmed);
+            } else if (reportedPoints > 0) {
+                this.result.read += '（积分未确认，接口值 +'
+                    + reportedPoints + '）';
+                this.log(
+                    '🟡',
+                    '阅读进度已更新，但 App 余额未变化，暂不确认积分入账'
+                );
+            }
         } catch (error) {
             this.result.read = '失败';
             this.log('🔴', '阅读任务失败: ' + error.message);
@@ -1652,7 +1802,8 @@ class RewardsRunner {
     async run() {
         this.log('🚀', '开始执行');
         try {
-            const info = await this.getRewardsInfo();
+            const info = this.preflightRewardsInfo
+                || await this.getRewardsInfo();
             this.result.startBalance = info.balance;
             this.log('📊', '初始积分: ' + info.balance);
         } catch (error) {
@@ -1667,7 +1818,12 @@ class RewardsRunner {
         if (this.config.dryRun) {
             this.log('🔎', 'dry-run：不刷新 OAuth、不写入令牌状态');
         } else if (this.config.tasks.has('sign') || this.config.tasks.has('read')) {
-            await this.refreshOAuth();
+            if (this.oauthBindingError) {
+                this.accessToken = '';
+                this.log('🔴', this.oauthBindingError);
+            } else if (!this.oauthPreflightDone) {
+                await this.refreshOAuth();
+            }
         }
         await this.runSign();
         await this.delay(3000, 8000);
@@ -1718,7 +1874,8 @@ function parseAccounts() {
                 cookie: item.cookie || '',
                 searchCookie: item.searchCookie || item.cookie || '',
                 refreshToken: item.refreshToken || item.refresh_token || '',
-                authCode: item.authCode || item.auth_code || ''
+                authCode: item.authCode || item.auth_code || '',
+                oauthRuid: item.oauthRuid || item.oauth_ruid || ''
             };
         });
     }
@@ -1729,7 +1886,8 @@ function parseAccounts() {
         cookie: cookie,
         searchCookie: process.env.BING_REWARDS_SEARCH_COOKIE || cookie,
         refreshToken: process.env.BING_REWARDS_REFRESH_TOKEN || '',
-        authCode: process.env.BING_REWARDS_AUTH_CODE || ''
+        authCode: process.env.BING_REWARDS_AUTH_CODE || '',
+        oauthRuid: process.env.BING_REWARDS_OAUTH_RUID || ''
     }];
 }
 
@@ -1801,6 +1959,71 @@ async function sendQingLongNotify(message, enabled) {
     console.log('[通知] sendNotify.js 调用失败: ' + (errors.join('; ') || '未找到通知模块'));
 }
 
+function resolveOAuthBindingConflicts(runners) {
+    const groups = new Map();
+    for (const runner of runners) {
+        const ruid = runner.appAccountInfo && runner.appAccountInfo.ruid;
+        if (!ruid) continue;
+        if (!groups.has(ruid)) groups.set(ruid, []);
+        groups.get(ruid).push(runner);
+    }
+    for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        const viable = group.filter(function (runner) {
+            if (!runner.preflightRewardsInfo || !runner.appAccountInfo) {
+                return false;
+            }
+            return Math.abs(
+                Number(runner.appAccountInfo.balance)
+                    - Number(runner.preflightRewardsInfo.balance)
+            ) <= OAUTH_BALANCE_TOLERANCE;
+        });
+        if (viable.length === 1) {
+            for (const runner of group) {
+                if (runner === viable[0]) continue;
+                runner.oauthBindingError =
+                    'OAuth Token 与“' + viable[0].name
+                    + '”属于同一 Microsoft 账号，已阻止串号执行';
+            }
+            continue;
+        }
+        for (const runner of group) {
+            runner.oauthBindingError =
+                '多个备注使用了同一个 Microsoft OAuth 账号，'
+                + '请在扩展中分别重新授权';
+        }
+    }
+    return runners;
+}
+
+async function preflightOAuthBindings(runners) {
+    for (const runner of runners) {
+        try {
+            runner.preflightRewardsInfo = await runner.getRewardsInfo();
+        } catch (_) {
+            continue;
+        }
+        runner.oauthPreflightDone = true;
+        const refreshed = await runner.refreshOAuth({ deferSave: true });
+        if (
+            !refreshed
+            && (runner.refreshToken || runner.account.authCode)
+        ) {
+            runner.oauthBindingError =
+                'OAuth 预检失败：' + (runner.oauthRefreshError || 'Token 不可用');
+        }
+    }
+    resolveOAuthBindingConflicts(runners);
+    for (const runner of runners) {
+        if (runner.oauthBindingError) {
+            runner.accessToken = '';
+            runner.appAccountInfo = null;
+        } else if (runner.accessToken) {
+            runner.saveRefreshToken();
+        }
+    }
+}
+
 async function main() {
     const accounts = parseAccounts();
     if (accounts.length === 0) {
@@ -1814,9 +2037,18 @@ async function main() {
     console.log('账号数: ' + accounts.length + '，任务: ' + Array.from(config.tasks).join(','));
     if (config.dryRun) console.log('当前为 dry-run，只读取状态，不提交任务');
 
+    const runners = accounts.map(function (account) {
+        return new RewardsRunner(account, config);
+    });
+    if (
+        !config.dryRun
+        && (config.tasks.has('sign') || config.tasks.has('read'))
+    ) {
+        await preflightOAuthBindings(runners);
+    }
+
     const results = [];
-    for (const account of accounts) {
-        const runner = new RewardsRunner(account, config);
+    for (const runner of runners) {
         try {
             results.push(await runner.run());
         } catch (error) {
@@ -1851,5 +2083,7 @@ module.exports = {
     loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,
     buildConfig: buildConfig,
+    resolveOAuthBindingConflicts: resolveOAuthBindingConflicts,
+    preflightOAuthBindings: preflightOAuthBindings,
     main: main
 };

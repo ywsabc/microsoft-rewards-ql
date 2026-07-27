@@ -68,6 +68,25 @@ function createBackgroundHarness() {
         console: console,
         crypto: crypto.webcrypto,
         fetch: async function (url, options) {
+            if (String(url).startsWith(
+                'https://prod.rewardsplatform.microsoft.com/dapi/me'
+            )) {
+                const accessToken = String(options.headers.authorization || '')
+                    .replace(/^Bearer\s+/, '');
+                const suffix = accessToken.replace(/^access-authorization-code-/, '');
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async function () {
+                        return {
+                            response: {
+                                profile: { ruid: 'rewards-user-' + suffix },
+                                balance: suffix === '1' ? 1000 : 2000
+                            }
+                        };
+                    }
+                };
+            }
             const code = new URLSearchParams(options.body).get('code');
             return {
                 ok: true,
@@ -140,6 +159,8 @@ test('OAuth flow stores a separate refreshToken for every account', async functi
     assert.equal(list.accounts.length, 2);
     assert.equal(list.accounts[0].refreshToken, 'refresh-authorization-code-1');
     assert.equal(list.accounts[1].refreshToken, 'refresh-authorization-code-2');
+    assert.equal(list.accounts[0].oauthRuid, 'rewards-user-1');
+    assert.equal(list.accounts[1].oauthRuid, 'rewards-user-2');
 
     const firstStatus = await harness.send({
         type: 'oauth:status',
@@ -152,6 +173,38 @@ test('OAuth flow stores a separate refreshToken for every account', async functi
     assert.equal(firstStatus.status, 'ready');
     assert.equal(firstStatus.cookieFingerprint, 'fingerprint-1');
     assert.equal(secondToken.refreshToken, 'refresh-authorization-code-2');
+    assert.equal(secondToken.oauthRuid, 'rewards-user-2');
+});
+
+test('OAuth flow rejects a Microsoft account already bound to another remark', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 'fingerprint-1');
+    const second = await capture(harness, '账号2', 'fingerprint-2');
+
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: 'fingerprint-1'
+    });
+    await harness.finishOAuth('authorization-code-1');
+
+    await harness.send({
+        type: 'oauth:start',
+        accountId: second.account.id,
+        cookieFingerprint: 'fingerprint-2'
+    });
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: second.account.id
+    });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /已绑定“账号1”的同一 Microsoft 账号/);
+
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(list.accounts[1].refreshToken, '');
+    assert.equal(list.accounts[1].oauthRuid, '');
 });
 
 test('account remark is unique and updating it rebinds the existing record', async function () {
@@ -170,6 +223,7 @@ test('account remark is unique and updating it rebinds the existing record', asy
     assert.equal(rebound.account.id, first.account.id);
     assert.equal(rebound.account.cookieFingerprint, 'new-fingerprint');
     assert.equal(rebound.account.refreshToken, '');
+    assert.equal(rebound.account.oauthRuid, '');
 
     await assert.rejects(
         harness.send({
