@@ -340,6 +340,48 @@ test('a successful PC sign-in does not hide an App branch failure', async functi
     assert.match(runner.result.failures[0], /App 分支失败/);
 });
 
+test('runSign skips an App POST when the page already confirms check-in', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'completed-app-sign-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['sign']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir:
+                '/tmp/microsoft-rewards-ql-completed-app-sign-'
+                + process.pid
+        }
+    );
+    runner.lastRewardsInfo = {
+        dashboard: {
+            streakProgress: [
+                { partner: 'bingapp', complete: 1, total: 1 }
+            ]
+        }
+    };
+    let appSubmissions = 0;
+    runner.signApp = async function () {
+        appSubmissions++;
+        return null;
+    };
+    runner.signPC = async function () { return 0; };
+    runner.delay = async function () {};
+
+    await runner.runSign();
+
+    assert.equal(appSubmissions, 0);
+    assert.match(runner.result.sign, /完成 \+0/);
+    assert.ok(runner.logs.some(function (line) {
+        return /页面已确认 App 签到 1\/1，跳过重复请求/.test(line);
+    }));
+});
+
 test('HttpClient follows redirects and retains response cookies', async function (context) {
     const server = http.createServer(function (request, response) {
         if (request.url === '/start') {
@@ -1310,6 +1352,7 @@ test('parseEarnDashboard extracts balance, search quota, and activity cards', fu
         '<script>self.__next_f.push([1,"',
         '\\"balance\\":15534,',
         '\\"pointsCounters\\":{\\"dailyOffer\\":3008,\\"pc\\":{\\"max\\":60,\\"progress\\":15},\\"totalPoints\\":3023},',
+        '\\"partner\\":\\"bingapp\\",\\"complete\\":1,\\"total\\":1,',
         '\\"activityCards\\":[{\\"title\\":\\"每日活动\\",\\"points\\":10,\\"isCompleted\\":false,',
         '\\"offerId\\":\\"offer-1\\",\\"hash\\":\\"hash-1\\"}]',
         '"])</script>'
@@ -1323,6 +1366,9 @@ test('parseEarnDashboard extracts balance, search quota, and activity cards', fu
     }]);
     assert.equal(dashboard.morePromotions.length, 1);
     assert.equal(dashboard.morePromotions[0].offerId, 'offer-1');
+    assert.deepEqual(dashboard.streakProgress, [
+        { partner: 'bingapp', complete: 1, total: 1 }
+    ]);
 });
 
 test('parseDashboardDailySet decodes RSC data and keeps only the requested day', function () {
@@ -1425,6 +1471,53 @@ test('discoverCards combines earn cards with pending dashboard daily-set items',
         cards[0].offerId,
         'Gamification_DailySet_ZHCN_20260728_Child1'
     );
+});
+
+test('runPromos reports a page-confirmed completed daily set', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'completed-daily-set-test', cookie: '_U=account-a' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 10,
+            stateDir:
+                '/tmp/microsoft-rewards-ql-completed-daily-set-'
+                + process.pid
+        }
+    );
+    runner.getDashboard = async function () {
+        return { source: 'earn', activityCards: [] };
+    };
+    runner.getDailySetDashboard = async function () {
+        return {
+            source: 'dashboard',
+            dailySetItems: [1, 2, 3].map(function (index) {
+                return {
+                    title: '已完成活动' + index,
+                    points: 10,
+                    offerId:
+                        'Gamification_DailySet_ZHCN_20260728_Child'
+                        + index,
+                    hash: 'daily-hash-' + index,
+                    isCompleted: true
+                };
+            })
+        };
+    };
+
+    await runner.runPromos(false);
+
+    assert.match(
+        runner.result.promos,
+        /每日活动 3\/3 已完成；未发现其他可执行活动/
+    );
+    assert.equal(runner.result.failures.length, 0);
 });
 
 test('parseEarnStreakProgress reads the current daily-set counter', function () {

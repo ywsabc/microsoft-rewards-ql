@@ -289,6 +289,7 @@ function parseEarnDashboard(html) {
     return {
         source: 'earn',
         pointsCounters: points || {},
+        streakProgress: parseEarnStreakProgress(clean),
         activityCards: promotions,
         morePromotions: promotions,
         userStatus: {
@@ -415,12 +416,6 @@ function parsePointClaim(html) {
         points: Math.max(0, Number(pointClaim.points || 0)),
         entries: Array.isArray(pointClaim.entries) ? pointClaim.entries : []
     };
-}
-
-function mask(value) {
-    const text = String(value || '');
-    if (text.length < 12) return text ? '***' : '';
-    return text.slice(0, 5) + '…' + text.slice(-4);
 }
 
 function sanitizeName(value) {
@@ -966,7 +961,7 @@ class RewardsRunner {
                         this.saveRefreshToken();
                     }
                 }
-                this.log('🟢', 'OAuth Token 获取成功（refreshToken ' + mask(this.refreshToken) + '）');
+                this.log('🟢', 'OAuth Token 获取成功');
                 return true;
             } catch (error) {
                 this.accessToken = '';
@@ -1247,46 +1242,68 @@ class RewardsRunner {
         let success = false;
         let appUnconfirmed = 0;
         let appFailure = '';
-        try {
-            const appBalanceBefore = this.appAccountInfo
-                && this.appAccountInfo.balance;
-            const appResult = await this.signApp();
-            if (appResult !== null) {
-                const appInfoAfter = await this.getAppAccountInfo();
-                this.appAccountInfo = appInfoAfter || this.appAccountInfo;
-                const balances = [
-                    appResult.balance,
-                    appInfoAfter && appInfoAfter.balance
-                ].filter(function (value) {
-                    return Number.isFinite(Number(value));
-                }).map(Number);
-                const confirmed = Number.isFinite(Number(appBalanceBefore))
-                    ? Math.max(0, ...balances.map(function (value) {
-                        return value - Number(appBalanceBefore);
-                    }))
-                    : 0;
-                if (confirmed > 0) {
-                    success = true;
-                    total += confirmed;
-                    this.log('📱', 'App 签到余额确认 +' + confirmed);
-                } else if (appResult.duplicate) {
-                    success = true;
-                    this.log('📱', 'App 签到今日已完成，无新增积分');
-                } else if (appResult.reportedPoints > 0) {
-                    appUnconfirmed = appResult.reportedPoints;
-                    this.log(
-                        '🟡',
-                        'App 签到接口返回 +' + appResult.reportedPoints
-                            + '，但 App 余额未变化，暂不确认入账'
-                    );
-                } else if (appResult.accepted) {
-                    success = true;
-                    this.log('📱', 'App 签到请求已接受，今日无新增积分');
+        const streakProgress = this.lastRewardsInfo
+            && this.lastRewardsInfo.dashboard
+            && this.lastRewardsInfo.dashboard.streakProgress;
+        const appStreak = Array.isArray(streakProgress)
+            ? streakProgress.find(function (progress) {
+                return progress.partner === 'bingapp';
+            })
+            : null;
+        if (
+            appStreak
+            && appStreak.total > 0
+            && appStreak.complete >= appStreak.total
+        ) {
+            success = true;
+            this.log(
+                '📱',
+                '页面已确认 App 签到 '
+                    + appStreak.complete + '/' + appStreak.total
+                    + '，跳过重复请求'
+            );
+        } else {
+            try {
+                const appBalanceBefore = this.appAccountInfo
+                    && this.appAccountInfo.balance;
+                const appResult = await this.signApp();
+                if (appResult !== null) {
+                    const appInfoAfter = await this.getAppAccountInfo();
+                    this.appAccountInfo = appInfoAfter || this.appAccountInfo;
+                    const balances = [
+                        appResult.balance,
+                        appInfoAfter && appInfoAfter.balance
+                    ].filter(function (value) {
+                        return Number.isFinite(Number(value));
+                    }).map(Number);
+                    const confirmed = Number.isFinite(Number(appBalanceBefore))
+                        ? Math.max(0, ...balances.map(function (value) {
+                            return value - Number(appBalanceBefore);
+                        }))
+                        : 0;
+                    if (confirmed > 0) {
+                        success = true;
+                        total += confirmed;
+                        this.log('📱', 'App 签到余额确认 +' + confirmed);
+                    } else if (appResult.duplicate) {
+                        success = true;
+                        this.log('📱', 'App 签到今日已完成，无新增积分');
+                    } else if (appResult.reportedPoints > 0) {
+                        appUnconfirmed = appResult.reportedPoints;
+                        this.log(
+                            '🟡',
+                            'App 签到接口返回 +' + appResult.reportedPoints
+                                + '，但 App 余额未变化，暂不确认入账'
+                        );
+                    } else if (appResult.accepted) {
+                        success = true;
+                        this.log('📱', 'App 签到请求已接受，今日无新增积分');
+                    }
                 }
+            } catch (error) {
+                appFailure = error.message;
+                this.log('🟡', 'App 签到失败: ' + error.message);
             }
-        } catch (error) {
-            appFailure = error.message;
-            this.log('🟡', 'App 签到失败: ' + error.message);
         }
         await this.delay(3000, 8000);
         try {
@@ -1605,6 +1622,18 @@ class RewardsRunner {
             dailySetItems: dashboards[1].dailySetItems
         });
         const snapshot = this.activitySnapshot(combined);
+        const dailySetCards = (dashboards[1].dailySetItems || []).map(
+            function (item) {
+                return this.normalizeActivityCard(item, 'daily');
+            },
+            this
+        ).filter(Boolean);
+        snapshot.dailySet = {
+            complete: dailySetCards.filter(function (card) {
+                return card.completed;
+            }).length,
+            total: dailySetCards.length
+        };
         this.lastActivitySnapshot = snapshot;
         return snapshot;
     }
@@ -1659,6 +1688,13 @@ class RewardsRunner {
             );
         }
         return parts.join('，');
+    }
+
+    activityDailySetText() {
+        const dailySet = this.lastActivitySnapshot
+            && this.lastActivitySnapshot.dailySet;
+        if (!dailySet || dailySet.total <= 0) return '';
+        return dailySet.complete + '/' + dailySet.total;
     }
 
     async verifySubmittedCards(cards) {
@@ -1947,6 +1983,7 @@ class RewardsRunner {
             }
             const cards = await this.discoverCards();
             const exclusionText = this.activityExclusionText();
+            const dailySetText = this.activityDailySetText();
             const eligibleCards = cards.filter(function (card) {
                 return card.kind !== 'quiz' || this.config.tasks.has('quiz');
             }, this);
@@ -1957,18 +1994,50 @@ class RewardsRunner {
             if (exclusionText) {
                 this.log('🟡', '另有 ' + exclusionText);
             }
+            if (dailySetText) {
+                this.log('📅', '页面每日活动状态 ' + dailySetText);
+            }
             if (this.config.dryRun) {
                 this.result.promos = 'dry-run：发现 '
                     + eligibleCards.length
                     + ' 个可执行未完成活动';
+                if (dailySetText) {
+                    this.result.promos += '；每日活动 ' + dailySetText;
+                }
                 if (exclusionText) {
                     this.result.promos += '；另有 ' + exclusionText;
                 }
                 return;
             }
             if (eligibleCards.length === 0) {
-                this.result.promos =
-                    '未发现可执行活动（不等同服务端全部完成）';
+                const dailySet = this.lastActivitySnapshot
+                    && this.lastActivitySnapshot.dailySet;
+                if (
+                    dailySet
+                    && dailySet.total > 0
+                    && dailySet.complete >= dailySet.total
+                ) {
+                    this.result.promos = '每日活动 '
+                        + dailySetText
+                        + ' 已完成；未发现其他可执行活动';
+                } else {
+                    this.result.promos =
+                        '未发现可执行活动（不等同服务端全部完成）';
+                    if (dailySetText) {
+                        this.result.promos += '；每日活动 '
+                            + dailySetText;
+                    }
+                    if (
+                        dailySet
+                        && dailySet.total > 0
+                        && dailySet.complete < dailySet.total
+                    ) {
+                        this.recordFailure(
+                            '活动',
+                            '每日活动仍为 ' + dailySetText
+                        );
+                    }
+                }
                 if (exclusionText) {
                     this.result.promos += '；另有 ' + exclusionText;
                 }
