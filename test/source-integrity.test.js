@@ -59,19 +59,20 @@ test('split QingLong entry files expose independent schedules and modules', func
     }
 });
 
-test('QingLong guide documents safe GitHub timeout fallbacks', function () {
+test('QingLong guide documents a proxyless CDN and safe proxy fallback', function () {
     const guide = fs.readFileSync(
         path.join(root, 'docs', 'QINGLONG.md'),
         'utf8'
     );
     assert.match(
         guide,
-        /github\.com\/ywsabc\/microsoft-rewards-ql\/raw\/refs\/heads\/main\/microsoft_rewards_ql\.js/
+        /cdn\.jsdelivr\.net\/gh\/ywsabc\/microsoft-rewards-ql@main\/microsoft_rewards_ql\.js/
     );
+    assert.match(guide, /raw_microsoft-rewards-ql@main_microsoft_rewards_ql\.js/);
+    assert.match(guide, /关闭这个单文件订阅的“自动添加任务”和“自动删除任务”/);
     assert.match(guide, /MSR_GITHUB_PROXY/);
     assert.match(guide, /标准 HTTP\/HTTPS 代理地址/);
-    assert.match(guide, /容器里的这个地址\s*指向容器自身/);
-    assert.match(guide, /qinglong-mixed/);
+    assert.match(guide, /不要为拉取源码给全部青龙任务设置全局代理/);
     assert.match(guide, /分支可缓存 12 小时/);
     assert.match(
         guide,
@@ -81,6 +82,19 @@ test('QingLong guide documents safe GitHub timeout fallbacks', function () {
         guide,
         /共享核心单文件地址：[\s\S]{0,100}raw\.githubusercontent\.com/
     );
+});
+
+test('jsDelivr workflow purges and verifies every published script', function () {
+    const workflow = fs.readFileSync(
+        path.join(root, '.github', 'workflows', 'purge-jsdelivr.yml'),
+        'utf8'
+    );
+    assert.match(workflow, /push:\s*\n\s+branches: \[main\]/);
+    assert.match(workflow, /purge\.jsdelivr\.net\/gh\/ywsabc\/microsoft-rewards-ql@main/);
+    assert.match(workflow, /cdn\.jsdelivr\.net\/gh\/ywsabc\/microsoft-rewards-ql@main/);
+    assert.match(workflow, /microsoft_rewards_task_\*\.js/);
+    assert.match(workflow, /cmp --silent/);
+    assert.match(workflow, /exit 1/);
 });
 
 test('upstream v3.0.2 source retains its published checksum', function () {

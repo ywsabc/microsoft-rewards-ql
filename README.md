@@ -140,11 +140,11 @@ ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards
 自动添加任务，请在“配置文件”中设置 `AutoAddCron="true"`。
 
 如果 GitHub 仓库拉取超时，不要把公开 `ghproxy` 地址直接填到青龙的“代理”字段。
-该字段需要标准 HTTP/HTTPS 代理；没有代理时可使用
-`https://github.com/ywsabc/microsoft-rewards-ql/raw/refs/heads/main/microsoft_rewards_ql.js`
-建立单文件订阅，再按教程创建 7 个拆分任务。jsDelivr `@main` 存在分支缓存，只作为
-应急来源。完整方案、任务命令和下载自检见
-[GitHub 超时处理](docs/QINGLONG.md#11-github-仓库拉取超时)。
+没有代理时，推荐用
+`https://cdn.jsdelivr.net/gh/ywsabc/microsoft-rewards-ql@main/microsoft_rewards_ql.js`
+建立单文件订阅，再按教程创建 7 个拆分任务。本仓库会在 `main` 脚本更新后自动调用
+jsDelivr Purge API，并验证 CDN 文件与新提交逐字节一致。完整方案、任务命令和下载
+自检见[GitHub 超时处理](docs/QINGLONG.md#11-github-超时无代理单文件方案)。
 
 例如手动执行签到和移动搜索：
 
