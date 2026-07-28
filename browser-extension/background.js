@@ -11,6 +11,7 @@ const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
 const REWARDS_SCOPE = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL';
 const CLIENT_ID = '0000000040170455';
 const REWARDS_DAPI_ME = 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=105';
+const REWARDS_USERINFO = 'https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest';
 const REWARDS_APP_ID = 'SAAndroid/32.6.2110003560';
 const DASHBOARD_PAGE = 'popup.html';
 const ACCOUNT_STORAGE_KEY = 'rewardAccounts';
@@ -83,6 +84,105 @@ function accountNameKey(value) {
     return normalizeAccountName(value).toLocaleLowerCase();
 }
 
+function getCookies(query) {
+    return new Promise(function (resolve, reject) {
+        chrome.cookies.getAll(query, function (cookies) {
+            const error = chrome.runtime.lastError;
+            if (error) reject(new Error(error.message));
+            else resolve(cookies);
+        });
+    });
+}
+
+function buildCookieHeader(cookies, hostname) {
+    const current = cookies.slice().sort(function (left, right) {
+        if (left.path.length !== right.path.length) {
+            return right.path.length - left.path.length;
+        }
+        const leftDomain = left.domain.replace(/^\./, '');
+        const rightDomain = right.domain.replace(/^\./, '');
+        const leftExact = left.hostOnly && leftDomain === hostname ? 1 : 0;
+        const rightExact = right.hostOnly && rightDomain === hostname ? 1 : 0;
+        if (leftExact !== rightExact) return rightExact - leftExact;
+        return rightDomain.length - leftDomain.length;
+    });
+    const values = new Map();
+    for (const cookie of current) {
+        if (!values.has(cookie.name)) values.set(cookie.name, cookie.value);
+    }
+    return Array.from(values.entries()).map(function (entry) {
+        return entry[0] + '=' + entry[1];
+    }).join('; ');
+}
+
+function cookieValue(header, name) {
+    const prefix = name + '=';
+    const part = String(header || '').split(/;\s*/).find(function (item) {
+        return item.startsWith(prefix);
+    });
+    return part ? part.slice(prefix.length) : '';
+}
+
+async function fingerprintCookies(rewardsCookie, bingCookie) {
+    const stableIdentity = [
+        cookieValue(rewardsCookie, '_U'),
+        cookieValue(rewardsCookie, '.MSA.Auth')
+            || cookieValue(rewardsCookie, '_C_Auth'),
+        cookieValue(bingCookie, '_U')
+    ].join('\n');
+    const bytes = new TextEncoder().encode(stableIdentity);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), function (value) {
+        return value.toString(16).padStart(2, '0');
+    }).join('');
+}
+
+async function inspectBrowserRewardsSession() {
+    const lists = await Promise.all([
+        getCookies({ url: 'https://rewards.bing.com/' }),
+        getCookies({ url: 'https://www.bing.com/' })
+    ]);
+    const rewardsCookie = buildCookieHeader(
+        lists[0],
+        'rewards.bing.com'
+    );
+    const bingCookie = buildCookieHeader(lists[1], 'www.bing.com');
+    const rewardsU = cookieValue(rewardsCookie, '_U');
+    const bingU = cookieValue(bingCookie, '_U');
+    const rewardsAuth = cookieValue(rewardsCookie, '.MSA.Auth')
+        || cookieValue(rewardsCookie, '_C_Auth');
+    if (!rewardsU || !bingU || !rewardsAuth || rewardsU !== bingU) {
+        throw new Error('当前 Bing 与 Rewards 浏览器会话不一致');
+    }
+    const response = await fetch(REWARDS_USERINFO, {
+        credentials: 'include',
+        headers: {
+            accept: 'application/json',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+    });
+    const data = await response.json().catch(function () { return {}; });
+    if (!response.ok) {
+        throw new Error('Rewards Cookie 身份校验 HTTP ' + response.status);
+    }
+    const dashboard = data.dashboard || data;
+    const userStatus = dashboard.userStatus || {};
+    const rawBalance = userStatus.availablePoints
+        ?? dashboard.availablePoints
+        ?? dashboard.balance;
+    const balance = Number(rawBalance);
+    if (!Number.isFinite(balance)) {
+        throw new Error('Rewards Cookie 身份校验缺少余额');
+    }
+    return {
+        cookieFingerprint: await fingerprintCookies(
+            rewardsCookie,
+            bingCookie
+        ),
+        balance: balance
+    };
+}
+
 function normalizeAccount(input, index) {
     if (!input || typeof input !== 'object') return null;
     const cookieFingerprint = String(input.cookieFingerprint || '');
@@ -136,17 +236,39 @@ async function captureAccount(input) {
             return item.id === String(input.accountId || '');
         });
         if (!account) throw new Error('所选账号不存在');
-        const duplicate = accounts.find(function (item) {
+        const duplicateName = accounts.find(function (item) {
             return item.id !== account.id
                 && accountNameKey(item.name) === accountNameKey(requestedName);
         });
-        if (duplicate) throw new Error('账号备注已存在：' + duplicate.name);
+        if (duplicateName) {
+            throw new Error('账号备注已存在：' + duplicateName.name);
+        }
+        const duplicateCookie = accounts.find(function (item) {
+            return item.id !== account.id
+                && item.cookieFingerprint === fingerprint;
+        });
+        if (duplicateCookie) {
+            throw new Error(
+                '当前浏览器会话已属于“' + duplicateCookie.name + '”'
+            );
+        }
     } else {
-        account = accounts.find(function (item) {
+        const sameCookie = accounts.find(function (item) {
             return item.cookieFingerprint === fingerprint;
-        }) || accounts.find(function (item) {
+        });
+        const sameName = accounts.find(function (item) {
             return accountNameKey(item.name) === accountNameKey(requestedName);
         });
+        if (
+            sameName
+            && (!sameCookie || sameName.id !== sameCookie.id)
+        ) {
+            throw new Error(
+                '账号备注“' + requestedName
+                    + '”已绑定其他浏览器会话，请使用“更新所选账号”'
+            );
+        }
+        account = sameCookie || null;
     }
     if (!account) {
         if (accounts.length >= MAX_ACCOUNTS) {
@@ -285,6 +407,7 @@ async function exchangeCode(code, oauthSession) {
     }
     if (!data.access_token) throw new Error('Token 响应缺少 access_token');
     const oauthIdentity = await inspectOAuthToken(data.access_token);
+    const browserIdentity = await inspectBrowserRewardsSession();
     const accounts = await getAccounts();
     const account = accounts.find(function (item) {
         return item.id === oauthSession.oauthAccountId;
@@ -292,6 +415,20 @@ async function exchangeCode(code, oauthSession) {
     if (!account) throw new Error('授权对应的账号已经被删除');
     if (account.cookieFingerprint !== oauthSession.oauthCookieFingerprint) {
         throw new Error('账号 Cookie 会话在授权期间发生变化');
+    }
+    if (
+        browserIdentity.cookieFingerprint
+            !== oauthSession.oauthCookieFingerprint
+    ) {
+        throw new Error('OAuth 回调时浏览器已切换到其他 Rewards 账号');
+    }
+    if (
+        !Number.isFinite(Number(oauthIdentity.balance))
+        || Number(oauthIdentity.balance) !== Number(browserIdentity.balance)
+    ) {
+        throw new Error(
+            'OAuth 账号余额与当前 Rewards Cookie 不一致，已阻止串号'
+        );
     }
     const duplicate = accounts.find(function (item) {
         return item.id !== account.id
@@ -323,6 +460,10 @@ async function startOAuth(accountId, cookieFingerprint) {
     if (!account) throw new Error('请先保存并选择当前账号');
     if (account.cookieFingerprint !== String(cookieFingerprint || '')) {
         throw new Error('浏览器当前账号与所选账号不一致');
+    }
+    const browserIdentity = await inspectBrowserRewardsSession();
+    if (browserIdentity.cookieFingerprint !== account.cookieFingerprint) {
+        throw new Error('当前浏览器会话与所选账号不一致');
     }
     const previous = await chrome.storage.session.get(['oauthTabId']);
     if (previous.oauthTabId) {

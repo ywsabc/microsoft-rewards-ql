@@ -85,6 +85,7 @@ BING_REWARDS_ACCOUNTS
     "name": "账号1",
     "cookie": ".MSA.Auth=...; _U=...; ...",
     "searchCookie": "_U=...; MUID=...; ...",
+    "cookieFingerprint": "由扩展自动同步",
     "refreshToken": "M.R3_BAY...",
     "oauthRuid": "由扩展自动同步"
   }
@@ -92,9 +93,10 @@ BING_REWARDS_ACCOUNTS
 ```
 
 Cookie 和 refreshToken 等同账号密码，不要写入脚本、GitHub Issue 或公开日志。
-多账号必须逐个切换 Microsoft 账号并授权。扩展 `3.0.1` 及以上会同步匿名
-`oauthRuid`；脚本执行移动端签到/阅读前还会核对 Cookie 与 DAPI 余额，发现串号便
-停止该账号的移动端任务。
+多账号必须逐个切换 Microsoft 账号并授权。扩展 `3.0.2` 会同步 Cookie 指纹与匿名
+`oauthRuid`；授权开始和回调时都会重新读取当前浏览器会话，并要求 Cookie 与 DAPI
+余额完全一致。核心还会拒绝重复备注、重复 Cookie、重复 `oauthRuid` 和两个站点
+`_U` 不一致的配置。升级后请重新用扩展同步一次。
 
 ## 4. 首次安全测试
 
@@ -185,5 +187,7 @@ BING_REWARDS_MOBILE_SEARCH_COUNT=3
   和 Microsoft 页面是否限制搜索，不要继续手动高频执行。
 - 青龙任务显示失败但日志仍有部分完成：新版会在任一启用模块失败、未确认或关键
   状态无法解析时返回非零退出码，避免把部分执行误报为全部成功。
+- 活动显示“提交已接受但未确认”：请求已经到达服务端，但 `earn`/`getuserinfo`
+  没有返回明确完成状态；卡片暂时消失也不会算完成，不要立刻高频重跑。
 - 页面显示“领取”但脚本显示 0：Rewards 首页固定显示领取入口，以“可领取”数值和
   `pointClaim` 服务端状态为准。

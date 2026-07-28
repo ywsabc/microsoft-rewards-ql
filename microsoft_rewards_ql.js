@@ -30,7 +30,7 @@ const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
 const REWARDS_SCOPE = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL';
 const TOKEN_URL = 'https://login.live.com/oauth20_token.srf';
 const DEFAULT_STATE_DIR = path.join(__dirname, '.state');
-const OAUTH_BALANCE_TOLERANCE = 1000;
+const OAUTH_BALANCE_TOLERANCE = 0;
 
 const UA = {
     pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
@@ -160,17 +160,6 @@ async function loadHotSearchWords(client, providers) {
         }
     }
     throw new Error(errors.join('; ') || '没有可用热搜源');
-}
-
-function todayKeys() {
-    const now = new Date();
-    const month = now.getMonth() + 1;
-    const day = now.getDate();
-    const year = now.getFullYear();
-    return [
-        String(month).padStart(2, '0') + '/' + String(day).padStart(2, '0') + '/' + year,
-        month + '/' + day + '/' + year
-    ];
 }
 
 function taskDateKey(lockCN) {
@@ -334,6 +323,104 @@ function mask(value) {
 
 function sanitizeName(value) {
     return String(value || 'account').replace(/[^a-zA-Z0-9_.\-\u4e00-\u9fff]/g, '_').slice(0, 60);
+}
+
+function parseCookieHeader(header) {
+    const values = new Map();
+    for (const part of String(header || '').split(/;\s*/)) {
+        const pos = part.indexOf('=');
+        if (pos <= 0) continue;
+        values.set(
+            part.slice(0, pos).trim(),
+            part.slice(pos + 1).trim()
+        );
+    }
+    return values;
+}
+
+function stableCookieText(values) {
+    return Array.from(values.entries()).sort(function (left, right) {
+        return left[0].localeCompare(right[0]);
+    }).map(function (entry) {
+        return entry[0] + '=' + entry[1];
+    }).join(';');
+}
+
+function accountCookieIdentity(cookie, searchCookie) {
+    const rewards = parseCookieHeader(cookie);
+    const search = parseCookieHeader(searchCookie || cookie);
+    const rewardsU = rewards.get('_U') || '';
+    const searchU = search.get('_U') || '';
+    const auth = rewards.get('.MSA.Auth')
+        || rewards.get('_C_Auth')
+        || '';
+    const stableValues = [rewardsU, auth, searchU];
+    const hasStableIdentity = stableValues.some(Boolean);
+    const material = hasStableIdentity
+        ? stableValues.join('\n')
+        : stableCookieText(rewards) + '\n' + stableCookieText(search);
+    return {
+        rewardsU: rewardsU,
+        searchU: searchU,
+        fingerprint: crypto.createHash('sha256').update(material).digest('hex')
+    };
+}
+
+function validateAccounts(accounts) {
+    const names = new Map();
+    const cookies = new Map();
+    const oauthUsers = new Map();
+    for (const account of accounts) {
+        const nameKey = String(account.name || '').trim().toLocaleLowerCase();
+        if (names.has(nameKey)) {
+            throw new Error(
+                '账号备注重复：“' + names.get(nameKey)
+                    + '”与“' + account.name + '”'
+            );
+        }
+        names.set(nameKey, account.name);
+
+        const identity = accountCookieIdentity(
+            account.cookie,
+            account.searchCookie
+        );
+        if (
+            identity.rewardsU
+            && identity.searchU
+            && identity.rewardsU !== identity.searchU
+        ) {
+            throw new Error(
+                '账号“' + account.name
+                    + '”的 Rewards Cookie 与搜索 Cookie 不属于同一会话'
+            );
+        }
+        if (
+            account.cookieFingerprint
+            && account.cookieFingerprint !== identity.fingerprint
+        ) {
+            throw new Error(
+                '账号“' + account.name + '”的 Cookie 指纹校验失败'
+            );
+        }
+        account.cookieFingerprint = identity.fingerprint;
+        if (cookies.has(identity.fingerprint)) {
+            throw new Error(
+                '账号“' + cookies.get(identity.fingerprint)
+                    + '”与“' + account.name + '”使用了相同 Cookie'
+            );
+        }
+        cookies.set(identity.fingerprint, account.name);
+
+        const ruid = String(account.oauthRuid || '');
+        if (ruid && oauthUsers.has(ruid)) {
+            throw new Error(
+                '账号“' + oauthUsers.get(ruid) + '”与“'
+                    + account.name + '”绑定了同一个 OAuth 身份'
+            );
+        }
+        if (ruid) oauthUsers.set(ruid, account.name);
+    }
+    return accounts;
 }
 
 class CookieJar {
@@ -505,18 +592,52 @@ class HttpClient {
 }
 
 class StateStore {
-    constructor(accountName, stateDir) {
+    constructor(account, stateDir) {
         this.dir = stateDir || DEFAULT_STATE_DIR;
-        this.file = path.join(this.dir, sanitizeName(accountName) + '.json');
+        this.binding = {
+            cookieFingerprint: String(
+                account.cookieFingerprint
+                || accountCookieIdentity(
+                    account.cookie,
+                    account.searchCookie
+                ).fingerprint
+            ),
+            oauthRuid: String(account.oauthRuid || '')
+        };
+        const identity = this.binding.oauthRuid
+            ? 'oauth:' + this.binding.oauthRuid
+            : 'cookie:' + this.binding.cookieFingerprint;
+        const suffix = crypto.createHash('sha256')
+            .update(identity)
+            .digest('hex')
+            .slice(0, 16);
+        this.file = path.join(
+            this.dir,
+            sanitizeName(account.name) + '-' + suffix + '.json'
+        );
         this.data = {};
         try {
-            this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+            const loaded = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+            const stored = loaded.accountBinding || {};
+            const oauthMatches = Boolean(
+                this.binding.oauthRuid
+                && stored.oauthRuid
+                && this.binding.oauthRuid === stored.oauthRuid
+            );
+            const cookieMatches = Boolean(
+                this.binding.cookieFingerprint
+                && stored.cookieFingerprint
+                && this.binding.cookieFingerprint
+                    === stored.cookieFingerprint
+            );
+            this.data = oauthMatches || cookieMatches ? loaded : {};
         } catch (_) {
             this.data = {};
         }
     }
 
     save() {
+        this.data.accountBinding = Object.assign({}, this.binding);
         fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
         const temp = this.file + '.tmp';
         fs.writeFileSync(temp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
@@ -538,7 +659,7 @@ class RewardsRunner {
             account.searchCookie || account.cookie
         ));
         this.regionHttp = new HttpClient(null);
-        this.stateStore = new StateStore(this.name, config.stateDir);
+        this.stateStore = new StateStore(account, config.stateDir);
         this.state = this.stateStore.data;
         this.accessToken = '';
         this.refreshToken = this.state.refreshToken || account.refreshToken || '';
@@ -554,7 +675,8 @@ class RewardsRunner {
         // 使用 www.bing.com 并通过 mkt 锁定中文市场，与上游浏览器脚本一致。
         this.host = 'www.bing.com';
         this.searchSessionSynced = false;
-        this.submittedPromoIds = new Set();
+        this.submittedPromoCards = new Map();
+        this.confirmedPromoIds = new Set();
         this.promoSubmissionFailures = 0;
         this.promoDeferred = 0;
         this.promoCooldownSkipped = 0;
@@ -642,7 +764,9 @@ class RewardsRunner {
         const storedToken = this.state.refreshToken || '';
         const configuredToken = this.account.refreshToken || '';
         const candidates = [];
-        if (storedToken) candidates.push({ type: 'refresh_token', value: storedToken });
+        if (storedToken) {
+            candidates.push({ type: 'refresh_token', value: storedToken });
+        }
         if (configuredToken && configuredToken !== storedToken) {
             candidates.push({ type: 'refresh_token', value: configuredToken });
         }
@@ -650,6 +774,13 @@ class RewardsRunner {
 
         if (candidates.length === 0) {
             this.log('🟡', '未配置 refreshToken/authCode，跳过 App 签到与阅读');
+            return false;
+        }
+        if (!this.expectedOauthRuid) {
+            this.oauthRefreshError =
+                '缺少 oauthRuid，已阻止未绑定的 OAuth Token 执行';
+            this.oauthBindingError = this.oauthRefreshError;
+            this.log('🔴', this.oauthRefreshError);
             return false;
         }
 
@@ -700,7 +831,7 @@ class RewardsRunner {
                     ) > OAUTH_BALANCE_TOLERANCE
                 ) {
                     throw new Error(
-                        'OAuth Token 的 App 余额与 Rewards Cookie 差异过大'
+                        'OAuth Token 的 App 余额与 Rewards Cookie 不一致'
                     );
                 }
                 this.appAccountInfo = appAccountInfo;
@@ -725,8 +856,17 @@ class RewardsRunner {
     }
 
     saveRefreshToken() {
-        if (!this.refreshToken) return;
+        if (!this.refreshToken || !this.appAccountInfo) return;
+        if (
+            !this.expectedOauthRuid
+            || this.appAccountInfo.ruid !== this.expectedOauthRuid
+        ) {
+            this.oauthBindingError =
+                'OAuth 身份未与当前账号的 oauthRuid 完成强绑定';
+            return;
+        }
         this.state.refreshToken = this.refreshToken;
+        this.state.oauthRuid = this.appAccountInfo.ruid;
         this.state.tokenUpdatedAt = Date.now();
         this.stateStore.save();
     }
@@ -770,7 +910,9 @@ class RewardsRunner {
         });
         const data = safeJson(response.text);
         if (!data) throw new Error('Cookie 无效或 getuserinfo 返回了登录页面');
-        return data.dashboard || data;
+        const dashboard = data.dashboard || data;
+        if (!dashboard.source) dashboard.source = 'getuserinfo';
+        return dashboard;
     }
 
     async getEarnDashboard() {
@@ -1165,7 +1307,7 @@ class RewardsRunner {
         return 'open_only';
     }
 
-    normalizeCard(item, kind) {
+    normalizeActivityCard(item, kind) {
         if (!item) return null;
         const offerId = item.offerId || item.offerid || item.id || item.name;
         const hash = item.hash || item.activityId;
@@ -1173,48 +1315,172 @@ class RewardsRunner {
         const points = Number(item.points || item.pointProgressMax || item.max || 0);
         const max = Number(item.pointProgressMax || 0);
         const current = Number(item.pointProgress || 0);
-        const completed = item.isCompleted || item.complete || item.completed || (max > 0 && current >= max);
-        const locked = item.isLocked === true || item.isUnlocked === false;
-        if (!offerId || !hash || points <= 0 || completed || locked) return null;
+        const trueValues = new Set([
+            true,
+            1,
+            '1',
+            'true',
+            'completed',
+            'complete',
+            'claimed',
+            'done'
+        ]);
+        const falseValues = new Set([false, 0, '0', 'false']);
+        const completionValues = [
+            item.isCompleted,
+            item.complete,
+            item.completed,
+            item.state,
+            item.status
+        ].filter(function (value) {
+            return value !== undefined && value !== null;
+        }).map(function (value) {
+            return typeof value === 'string'
+                ? value.trim().toLowerCase()
+                : value;
+        });
+        const completed = completionValues.some(function (value) {
+            return trueValues.has(value);
+        }) || (max > 0 && current >= max);
+        const lockedValue = typeof item.isLocked === 'string'
+            ? item.isLocked.trim().toLowerCase()
+            : item.isLocked;
+        const unlockedValue = typeof item.isUnlocked === 'string'
+            ? item.isUnlocked.trim().toLowerCase()
+            : item.isUnlocked;
+        const locked = trueValues.has(lockedValue)
+            || (
+                falseValues.has(unlockedValue)
+                && item.isUnlocked !== undefined
+                && item.isUnlocked !== null
+            );
         const haystack = (title + ' ' + offerId).toLowerCase();
-        if (SKIP_PATTERNS.some(function (pattern) { return haystack.includes(pattern); })) return null;
+        const skipped = SKIP_PATTERNS.some(function (pattern) {
+            return haystack.includes(pattern);
+        });
         return {
             title: title,
             points: points,
-            offerId: offerId,
-            hash: hash,
+            offerId: String(offerId || ''),
+            hash: String(hash || ''),
             kind: kind || this.inferKind(offerId, title),
             type: item.type === undefined || item.type === null ? 11 : item.type,
             isPromotional: item.isPromotional === undefined
                 ? '$undefined'
                 : item.isPromotional,
             form: item.form || '',
-            url: item.destinationUrl || item.destination || 'https://rewards.bing.com/'
+            url: item.destinationUrl || item.destination || 'https://rewards.bing.com/',
+            current: current,
+            max: max,
+            completed: completed,
+            locked: locked,
+            skipped: skipped
         };
     }
 
-    async discoverCards() {
-        const dashboard = await this.getDashboard();
-        const cards = [];
+    activitySnapshot(dashboard) {
+        const statuses = [];
         const seen = new Set();
         const self = this;
         function push(item, kind) {
-            const card = self.normalizeCard(item, kind);
+            const card = self.normalizeActivityCard(item, kind);
             if (!card) return;
-            const key = card.offerId + ':' + card.hash;
+            const key = card.offerId + ':' + card.hash + ':'
+                + card.completed + ':' + card.current + ':' + card.max;
             if (!seen.has(key)) {
                 seen.add(key);
-                cards.push(card);
+                statuses.push(card);
             }
         }
         const dailySets = dashboard.dailySetPromotions || {};
-        for (const key of todayKeys()) {
+        for (const key of Object.keys(dailySets)) {
             const items = dailySets[key];
             if (Array.isArray(items)) items.forEach(function (item) { push(item, 'daily'); });
         }
-        const more = dashboard.morePromotions || dashboard.promotions || [];
-        if (Array.isArray(more)) more.forEach(function (item) { push(item); });
-        return cards;
+        for (const collection of [
+            dashboard.activityCards,
+            dashboard.morePromotions,
+            dashboard.promotions
+        ]) {
+            if (Array.isArray(collection)) {
+                collection.forEach(function (item) { push(item); });
+            }
+        }
+        return {
+            source: dashboard.source || 'getuserinfo',
+            statuses: statuses,
+            cards: statuses.filter(function (card) {
+                return Boolean(
+                    card.offerId
+                    && card.hash
+                    && card.points > 0
+                    && !card.completed
+                    && !card.locked
+                    && !card.skipped
+                );
+            })
+        };
+    }
+
+    async getActivitySnapshot() {
+        return this.activitySnapshot(await this.getDashboard());
+    }
+
+    async getActivityVerificationSnapshots() {
+        const attempts = await Promise.allSettled([
+            this.getEarnDashboard(),
+            this.getUserInfoDashboard()
+        ]);
+        const snapshots = attempts.filter(function (attempt) {
+            return attempt.status === 'fulfilled';
+        }).map(function (attempt) {
+            return this.activitySnapshot(attempt.value);
+        }, this);
+        if (snapshots.length === 0) {
+            const reasons = attempts.map(function (attempt) {
+                return attempt.status === 'rejected'
+                    ? attempt.reason.message
+                    : '';
+            }).filter(Boolean);
+            throw new Error(
+                '活动状态复核失败：' + (reasons.join('；') || '没有可用数据源')
+            );
+        }
+        return snapshots;
+    }
+
+    async discoverCards() {
+        return (await this.getActivitySnapshot()).cards;
+    }
+
+    async verifySubmittedCards(cards) {
+        const snapshots = await this.getActivityVerificationSnapshots();
+        const statuses = snapshots.flatMap(function (snapshot) {
+            return snapshot.statuses;
+        });
+        return cards.map(function (card) {
+            const offerMatches = statuses.filter(function (status) {
+                return status.offerId === card.offerId;
+            });
+            const exactMatches = offerMatches.filter(function (status) {
+                return card.hash && status.hash === card.hash;
+            });
+            const matches = exactMatches.length > 0
+                ? exactMatches
+                : offerMatches;
+            const completed = matches.length > 0
+                && matches.every(function (status) {
+                    return status.completed === true;
+                });
+            return {
+                card: card,
+                completed: completed,
+                found: matches.length > 0,
+                source: snapshots.map(function (snapshot) {
+                    return snapshot.source;
+                }).join('+')
+            };
+        });
     }
 
     async claimCard(card) {
@@ -1365,20 +1631,11 @@ class RewardsRunner {
         if (!this.config.tasks.has('promos')) return;
         const label = secondPass ? '二次扫描' : '活动卡片';
         try {
-            const cards = await this.discoverCards();
-            const eligibleCards = cards.filter(function (card) {
-                return card.kind !== 'quiz' || this.config.tasks.has('quiz');
-            }, this);
-            this.log(
-                '🧩',
-                label + '发现 ' + eligibleCards.length + ' 个可执行未完成卡片'
-            );
-            if (this.config.dryRun) {
-                this.result.promos = 'dry-run ' + eligibleCards.length + ' 个';
-                return;
-            }
             if (secondPass) {
-                if (this.submittedPromoIds.size === 0) {
+                const submittedCards = Array.from(
+                    this.submittedPromoCards.values()
+                );
+                if (submittedCards.length === 0) {
                     this.result.promos += '，二扫无待确认';
                     if (this.promoSubmissionFailures > 0) {
                         this.recordFailure(
@@ -1400,22 +1657,45 @@ class RewardsRunner {
                     }
                     return;
                 }
-                const pendingIds = new Set(eligibleCards.map(function (item) {
-                    return item.offerId;
-                }));
-                const confirmed = Array.from(this.submittedPromoIds).filter(function (offerId) {
-                    return !pendingIds.has(offerId);
-                }).length;
+                const pendingCards = submittedCards.filter(function (card) {
+                    return !this.confirmedPromoIds.has(card.offerId);
+                }, this);
+                if (pendingCards.length > 0) {
+                    const verifications = await this.verifySubmittedCards(
+                        pendingCards
+                    );
+                    for (const verification of verifications) {
+                        if (verification.completed) {
+                            this.confirmedPromoIds.add(
+                                verification.card.offerId
+                            );
+                        } else {
+                            this.log(
+                                '🟡',
+                                '活动未获明确完成状态: '
+                                    + verification.card.offerId
+                                    + '（'
+                                    + (
+                                        verification.found
+                                            ? '仍为未完成'
+                                            : '复核列表中未找到，不能据此判完成'
+                                    )
+                                    + '）'
+                            );
+                        }
+                    }
+                }
+                const confirmed = this.confirmedPromoIds.size;
                 this.result.promos += '，二扫确认 '
-                    + confirmed + '/' + this.submittedPromoIds.size;
-                if (confirmed < this.submittedPromoIds.size) {
+                    + confirmed + '/' + submittedCards.length;
+                if (confirmed < submittedCards.length) {
                     this.result.promos += '（仍未完成 '
-                        + (this.submittedPromoIds.size - confirmed) + '）';
+                        + (submittedCards.length - confirmed) + '）';
                     this.recordFailure(
                         '活动',
                         '二次扫描后仍有 '
-                            + (this.submittedPromoIds.size - confirmed)
-                            + ' 个未确认'
+                            + (submittedCards.length - confirmed)
+                            + ' 个未获服务端明确完成状态'
                     );
                 }
                 if (this.promoSubmissionFailures > 0) {
@@ -1436,6 +1716,25 @@ class RewardsRunner {
                         this.promoCooldownSkipped + ' 个卡片仍在冷却'
                     );
                 }
+                return;
+            }
+            const cards = await this.discoverCards();
+            const eligibleCards = cards.filter(function (card) {
+                return card.kind !== 'quiz' || this.config.tasks.has('quiz');
+            }, this);
+            this.log(
+                '🧩',
+                label + '发现 ' + eligibleCards.length + ' 个可执行未完成卡片'
+            );
+            if (this.config.dryRun) {
+                this.result.promos = 'dry-run：发现 '
+                    + eligibleCards.length
+                    + ' 个可执行未完成活动';
+                return;
+            }
+            if (eligibleCards.length === 0) {
+                this.result.promos =
+                    '未发现可执行活动（不等同服务端全部完成）';
                 return;
             }
             let ok = 0;
@@ -1459,7 +1758,7 @@ class RewardsRunner {
                 this.markPromoAttempt(card);
                 if (await this.claimCard(card)) {
                     submitted.push(card);
-                    this.submittedPromoIds.add(card.offerId);
+                    this.submittedPromoCards.set(card.offerId, card);
                 } else {
                     this.promoSubmissionFailures++;
                 }
@@ -1468,13 +1767,30 @@ class RewardsRunner {
                 // Rewards 卡片状态存在服务端同步延迟；集中等待后再验证，
                 // 避免刚提交就误判失败并重复上报。
                 await this.delay(10000, 20000);
-                const pending = await this.discoverCards();
-                const pendingIds = new Set(pending.map(function (item) {
-                    return item.offerId;
-                }));
-                ok = submitted.filter(function (item) {
-                    return !pendingIds.has(item.offerId);
-                }).length;
+                const verifications = await this.verifySubmittedCards(
+                    submitted
+                );
+                for (const verification of verifications) {
+                    if (verification.completed) {
+                        this.confirmedPromoIds.add(
+                            verification.card.offerId
+                        );
+                        ok++;
+                    } else {
+                        this.log(
+                            '🟡',
+                            '活动提交已接受但未获明确完成状态: '
+                                + verification.card.offerId
+                                + '（'
+                                + (
+                                    verification.found
+                                        ? '服务端仍显示未完成'
+                                        : '复核列表中未找到'
+                                )
+                                + '）'
+                        );
+                    }
+                }
                 if (ok < submitted.length) {
                     this.log(
                         '🟡',
@@ -1484,24 +1800,18 @@ class RewardsRunner {
                     );
                 }
             }
-            if (secondPass) {
-                this.result.promos += '，二扫 ' + ok + '/' + limited.length;
-                if (ok < submitted.length) {
-                    this.result.promos += '（待同步 ' + (submitted.length - ok) + '）';
-                }
-            } else {
-                this.result.promos = ok + '/' + eligibleCards.length;
-                if (ok < submitted.length) {
-                    this.result.promos += '（上报未确认 '
-                        + (submitted.length - ok) + '）';
-                }
-                if (this.promoDeferred > 0) {
-                    this.result.promos += '，安全上限延后 '
-                        + this.promoDeferred;
-                }
-                if (skipped > 0) {
-                    this.result.promos += '，冷却跳过 ' + skipped;
-                }
+            this.result.promos = '明确完成 ' + ok + '/'
+                + eligibleCards.length;
+            if (ok < submitted.length) {
+                this.result.promos += '（已接受但未确认 '
+                    + (submitted.length - ok) + '）';
+            }
+            if (this.promoDeferred > 0) {
+                this.result.promos += '，安全上限延后 '
+                    + this.promoDeferred;
+            }
+            if (skipped > 0) {
+                this.result.promos += '，冷却跳过 ' + skipped;
             }
         } catch (error) {
             if (!secondPass) this.result.promos = '失败';
@@ -2174,7 +2484,7 @@ function parseAccounts() {
         if (!Array.isArray(parsed)) {
             throw new Error('BING_REWARDS_ACCOUNTS 必须是 JSON 数组');
         }
-        return parsed.map(function (item, index) {
+        const accounts = parsed.map(function (item, index) {
             if (!item || typeof item !== 'object') throw new Error('账号 ' + (index + 1) + ' 格式错误');
             return {
                 name: item.name || '账号' + (index + 1),
@@ -2182,20 +2492,26 @@ function parseAccounts() {
                 searchCookie: item.searchCookie || item.cookie || '',
                 refreshToken: item.refreshToken || item.refresh_token || '',
                 authCode: item.authCode || item.auth_code || '',
-                oauthRuid: item.oauthRuid || item.oauth_ruid || ''
+                oauthRuid: item.oauthRuid || item.oauth_ruid || '',
+                cookieFingerprint: item.cookieFingerprint
+                    || item.cookie_fingerprint
+                    || ''
             };
         });
+        return validateAccounts(accounts);
     }
     const cookie = process.env.BING_REWARDS_COOKIE || '';
     if (!cookie) return [];
-    return [{
+    return validateAccounts([{
         name: process.env.BING_REWARDS_NAME || '账号1',
         cookie: cookie,
         searchCookie: process.env.BING_REWARDS_SEARCH_COOKIE || cookie,
         refreshToken: process.env.BING_REWARDS_REFRESH_TOKEN || '',
         authCode: process.env.BING_REWARDS_AUTH_CODE || '',
-        oauthRuid: process.env.BING_REWARDS_OAUTH_RUID || ''
-    }];
+        oauthRuid: process.env.BING_REWARDS_OAUTH_RUID || '',
+        cookieFingerprint:
+            process.env.BING_REWARDS_COOKIE_FINGERPRINT || ''
+    }]);
 }
 
 function buildConfig() {
@@ -2403,6 +2719,8 @@ module.exports = {
     parsePointClaim: parsePointClaim,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
+    accountCookieIdentity: accountCookieIdentity,
+    validateAccounts: validateAccounts,
     parseAccounts: parseAccounts,
     buildConfig: buildConfig,
     resultsHaveFailures: resultsHaveFailures,

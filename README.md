@@ -33,10 +33,13 @@
 - 用 HTTP 接口完成 PC/App 签到、阅读、活动卡片和搜索；
 - 查询连签状态，但不伪造依赖真实浏览器 DOM 的点击结果；
 - 使用仓库根目录的 `sendNotify.js` 发送青龙通知；
-- 把续期后的 `refreshToken` 写入 `.state/账号.json`，文件权限为 `0600`。
+- 把续期后的 `refreshToken` 写入按账号身份隔离的 `.state/备注-身份摘要.json`，
+  文件权限为 `0600`。
 
 微软页面与未公开接口随时可能变化。接口没有明确确认成功时，脚本会报告失败或跳过，
 不会仅因为请求已发出就标记成功。
+活动提交后会同时复核 `earn` 与 `getuserinfo` 的明确完成字段；卡片从某个列表消失
+不再被当作完成。
 
 当前青龙版能识别首页待领取积分，并使用页面同款 Server Action 领取后复核余额。
 仍不会模拟依赖完整浏览器交互的特殊 Punch Card。普通每日活动和卡片会优先通过
@@ -56,13 +59,17 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
     "name": "账号1",
     "cookie": ".MSA.Auth=...; _U=...; ...",
     "searchCookie": "_U=...; MUID=...; ...",
+    "cookieFingerprint": "由扩展自动同步",
     "refreshToken": "M.R3_BAY....",
     "oauthRuid": "由扩展自动同步"
   },
   {
     "name": "账号2",
-    "cookie": "MUID=...; _U=...; ...",
-    "authCode": "https://login.live.com/oauth20_desktop.srf?code=..."
+    "cookie": ".MSA.Auth=...; _U=...; ...",
+    "searchCookie": "_U=...; MUID=...; ...",
+    "cookieFingerprint": "由扩展自动同步",
+    "refreshToken": "M.R3_BAY....",
+    "oauthRuid": "由扩展自动同步"
   }
 ]
 ```
@@ -72,8 +79,11 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
   `Cookie` 值；认证字段可能是 `.MSA.Auth` 或新版 `_C_Auth`。
 - `searchCookie`：可选但推荐。在已登录 `https://www.bing.com/` 的浏览器请求头中
   取得。未配置时沿用 `cookie`；浏览器扩展会分别读取并自动填写两个站点的 Cookie。
+- `cookieFingerprint`：扩展根据两个站点的登录字段生成；核心会重新计算并拒绝指纹
+  不一致、Cookie 重复或两个站点 `_U` 不一致的账号。
 - `refreshToken`：推荐配置，用于 App 签到和阅读。
-- `oauthRuid`：浏览器扩展自动写入的匿名账号标识，用于阻止多账号 Token 串号。
+- `oauthRuid`：浏览器扩展自动写入的匿名账号标识。配置 App 签到/阅读时必须同时
+  提供，用于阻止多账号 Token 串号。
 - `authCode`：可选的一次性授权码或完整 OAuth 回调 URL。兑换成功后，新的
   `refreshToken` 会保存到 `.state`，之后不再需要配置 `authCode`。
 
@@ -85,6 +95,8 @@ BING_REWARDS_COOKIE
 BING_REWARDS_SEARCH_COOKIE
 BING_REWARDS_REFRESH_TOKEN
 BING_REWARDS_AUTH_CODE
+BING_REWARDS_OAUTH_RUID
+BING_REWARDS_COOKIE_FINGERPRINT
 ```
 
 不要同时使用单账号变量和 `BING_REWARDS_ACCOUNTS`；存在多账号变量时，以它为准。
@@ -164,8 +176,9 @@ npm run test:account
 - Cookie、授权码和刷新令牌都属于敏感账号凭据，请勿提交到 Git、日志或发送给他人。
 - 自动化任务可能触发 Microsoft Rewards 风控，也可能不符合服务规则；请自行判断并承担风险。
 - `.state` 含刷新令牌，已加入 `.gitignore`，仍应限制青龙主机与备份文件的访问权限。
-- `.state` 中成功续期的令牌优先于环境变量；如需强制更换账号令牌，请删除对应账号的
-  `.state/账号.json` 后再运行。
+- `.state` 中通过 Cookie 指纹和 `oauthRuid` 校验的续期令牌优先于环境变量；状态
+  文件名包含账号身份摘要。同名账号更换 Cookie 后不会读取旧状态。升级后请使用扩展
+  重新同步一次；旧版仅按备注命名的状态文件不会再加载。
 - 热搜模式会在每个账号开始搜索前随机选择一个榜单，优先使用
   `hotapi.nntool.cc` 或 `cnxiaobai.com/DailyHotApi`，失败时自动切换提供方，全部失败
   才回退本地词库。热搜请求使用独立的无 Cookie HTTP 客户端，不会携带 Microsoft

@@ -72,7 +72,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '3.0.1');
+    assert.equal(manifest.version, '3.0.2');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -100,7 +100,7 @@ test('browser extension keeps account tokens in session and persists only opted-
         'utf8'
     );
     const forbidden = [
-        /\bXMLHttpRequest\b/,
+        /\bnew\s+XMLHttpRequest\b/,
         /\bWebSocket\b/,
         /\bsendBeacon\b/,
         /\bchrome\.storage\.sync\b/,

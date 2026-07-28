@@ -1,7 +1,10 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const http = require('http');
+const os = require('os');
+const path = require('path');
 const test = require('node:test');
 const runtime = require('../microsoft_rewards_ql');
 
@@ -35,6 +38,148 @@ test('parseAccounts accepts multi-account JSON', function () {
     assert.equal(accounts[1].authCode, 'c2');
     if (previous === undefined) delete process.env.BING_REWARDS_ACCOUNTS;
     else process.env.BING_REWARDS_ACCOUNTS = previous;
+});
+
+test('parseAccounts rejects duplicate remarks, cookies, OAuth identities, and crossed Bing sessions', function () {
+    const previous = process.env.BING_REWARDS_ACCOUNTS;
+    const parse = function (accounts) {
+        process.env.BING_REWARDS_ACCOUNTS = JSON.stringify(accounts);
+        return function () { runtime.parseAccounts(); };
+    };
+    try {
+        assert.throws(parse([
+            { name: '账号', cookie: '_U=a', searchCookie: '_U=a' },
+            { name: '账号', cookie: '_U=b', searchCookie: '_U=b' }
+        ]), /账号备注重复/);
+        assert.throws(parse([
+            { name: '账号1', cookie: '_U=a', searchCookie: '_U=a' },
+            { name: '账号2', cookie: '_U=a', searchCookie: '_U=a' }
+        ]), /使用了相同 Cookie/);
+        assert.throws(parse([
+            {
+                name: '账号1',
+                cookie: '_U=a',
+                searchCookie: '_U=a',
+                oauthRuid: 'same-oauth-user'
+            },
+            {
+                name: '账号2',
+                cookie: '_U=b',
+                searchCookie: '_U=b',
+                oauthRuid: 'same-oauth-user'
+            }
+        ]), /绑定了同一个 OAuth 身份/);
+        assert.throws(parse([
+            {
+                name: '账号1',
+                cookie: '_U=rewards-user',
+                searchCookie: '_U=search-user'
+            }
+        ]), /不属于同一会话/);
+        assert.throws(parse([
+            {
+                name: '账号1',
+                cookie: '_U=a',
+                searchCookie: '_U=a',
+                cookieFingerprint: 'forged'
+            }
+        ]), /Cookie 指纹校验失败/);
+    } finally {
+        if (previous === undefined) {
+            delete process.env.BING_REWARDS_ACCOUNTS;
+        } else {
+            process.env.BING_REWARDS_ACCOUNTS = previous;
+        }
+    }
+});
+
+test('state files are isolated by account identity instead of remark alone', function () {
+    const stateDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'microsoft-rewards-state-binding-')
+    );
+    const config = {
+        tasks: new Set(),
+        lockCN: true,
+        dryRun: true,
+        notify: false,
+        delayScale: 0,
+        searchInterval: 30,
+        searchCount: 1,
+        searchSource: 'local',
+        maxPromos: 1,
+        stateDir: stateDir
+    };
+    try {
+        const first = new runtime.RewardsRunner(
+            {
+                name: '同名账号',
+                cookie: '_U=account-a; .MSA.Auth=auth-a',
+                searchCookie: '_U=account-a'
+            },
+            config
+        );
+        first.state.refreshToken = 'token-for-account-a';
+        first.stateStore.save();
+
+        const firstReloaded = new runtime.RewardsRunner(
+            {
+                name: '同名账号',
+                cookie: '_U=account-a; .MSA.Auth=auth-a',
+                searchCookie: '_U=account-a',
+                refreshToken: 'stale-environment-token'
+            },
+            config
+        );
+        const second = new runtime.RewardsRunner(
+            {
+                name: '同名账号',
+                cookie: '_U=account-b; .MSA.Auth=auth-b',
+                searchCookie: '_U=account-b'
+            },
+            config
+        );
+
+        assert.equal(firstReloaded.refreshToken, 'token-for-account-a');
+        assert.notEqual(first.stateStore.file, second.stateStore.file);
+        assert.equal(second.refreshToken, '');
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('OAuth execution is blocked before network access when oauthRuid is missing', async function () {
+    const runner = new runtime.RewardsRunner(
+        {
+            name: 'unbound-oauth-test',
+            cookie: '_U=account-a',
+            searchCookie: '_U=account-a',
+            refreshToken: 'unbound-refresh-token'
+        },
+        {
+            tasks: new Set(['sign']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: path.join(
+                os.tmpdir(),
+                'microsoft-rewards-unbound-' + process.pid
+            )
+        }
+    );
+    let requests = 0;
+    runner.jsonRequest = async function () {
+        requests++;
+        throw new Error('must not request');
+    };
+
+    assert.equal(await runner.refreshOAuth(), false);
+    assert.equal(requests, 0);
+    assert.match(runner.oauthBindingError, /缺少 oauthRuid/);
 });
 
 test('OAuth conflict resolver keeps only the cookie account matching the App balance', function () {
@@ -674,6 +819,111 @@ test('discoverCards excludes locked level-benefit activities', async function ()
     ]);
 });
 
+test('activity string false remains pending instead of becoming completed', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'activity-false-test', cookie: '_U=account-a' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 10,
+            stateDir: path.join(
+                os.tmpdir(),
+                'microsoft-rewards-activity-false-' + process.pid
+            )
+        }
+    );
+    runner.getDashboard = async function () {
+        return {
+            source: 'test-dashboard',
+            activityCards: [{
+                title: 'pending string false',
+                points: 10,
+                offerId: 'pending-offer',
+                hash: 'pending-hash',
+                isCompleted: 'false'
+            }]
+        };
+    };
+
+    const cards = await runner.discoverCards();
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].offerId, 'pending-offer');
+    assert.equal(cards[0].completed, false);
+});
+
+test('activity verification requires an explicit server-completed status', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'activity-verification-test', cookie: '_U=account-a' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 10,
+            stateDir: path.join(
+                os.tmpdir(),
+                'microsoft-rewards-activity-verification-' + process.pid
+            )
+        }
+    );
+    const cards = [
+        { offerId: 'missing', hash: 'hash-missing' },
+        { offerId: 'pending', hash: 'hash-pending' },
+        { offerId: 'explicit', hash: 'hash-explicit' },
+        { offerId: 'progress', hash: 'hash-progress' }
+    ];
+    runner.getActivityVerificationSnapshots = async function () {
+        return [runner.activitySnapshot({
+            source: 'test-dashboard',
+            activityCards: [
+                {
+                    offerId: 'pending',
+                    hash: 'hash-pending',
+                    points: 10,
+                    isCompleted: false
+                },
+                {
+                    offerId: 'explicit',
+                    hash: 'hash-explicit',
+                    points: 10,
+                    isCompleted: true
+                },
+                {
+                    offerId: 'progress',
+                    hash: 'hash-progress',
+                    points: 10,
+                    pointProgress: 10,
+                    pointProgressMax: 10
+                }
+            ]
+        })];
+    };
+
+    const verified = await runner.verifySubmittedCards(cards);
+    assert.deepEqual(verified.map(function (item) {
+        return {
+            offerId: item.card.offerId,
+            found: item.found,
+            completed: item.completed
+        };
+    }), [
+        { offerId: 'missing', found: false, completed: false },
+        { offerId: 'pending', found: true, completed: false },
+        { offerId: 'explicit', found: true, completed: true },
+        { offerId: 'progress', found: true, completed: true }
+    ]);
+});
+
 test('runPromos cools down an unconfirmed card after one submission', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'promo-cooldown-test', cookie: 'WLS=session; _U=auth' },
@@ -706,12 +956,75 @@ test('runPromos cools down an unconfirmed card after one submission', async func
         submissions++;
         return true;
     };
+    runner.verifySubmittedCards = async function (cards) {
+        return cards.map(function (submittedCard) {
+            return {
+                card: submittedCard,
+                completed: false,
+                found: false,
+                source: 'test-dashboard'
+            };
+        });
+    };
     runner.delay = async function () {};
 
     await runner.runPromos(false);
     await runner.runPromos(false);
     assert.equal(submissions, 1);
     assert.match(runner.result.promos, /冷却跳过 1/);
+});
+
+test('an accepted promo is reported incomplete when the card disappears', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'promo-disappeared-test', cookie: '_U=account-a' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            promoRetryHours: 12,
+            stateDir: path.join(
+                os.tmpdir(),
+                'microsoft-rewards-promo-disappeared-' + process.pid
+            )
+        }
+    );
+    const card = {
+        title: 'disappeared card',
+        points: 10,
+        offerId: 'disappeared-offer',
+        hash: 'disappeared-hash',
+        kind: 'open_only',
+        url: 'https://www.bing.com/search?q=test'
+    };
+    runner.stateStore.save = function () {};
+    runner.discoverCards = async function () { return [card]; };
+    runner.claimCard = async function () { return true; };
+    runner.verifySubmittedCards = async function (cards) {
+        return cards.map(function (submittedCard) {
+            return {
+                card: submittedCard,
+                completed: false,
+                found: false,
+                source: 'test-dashboard'
+            };
+        });
+    };
+    runner.delay = async function () {};
+
+    await runner.runPromos(false);
+    await runner.runPromos(true);
+
+    assert.match(runner.result.promos, /明确完成 0\/1/);
+    assert.match(runner.result.promos, /仍未完成 1/);
+    assert.ok(runner.result.failures.some(function (message) {
+        return /未获服务端明确完成状态/.test(message);
+    }));
 });
 
 test('the second promo scan never submits a new card', async function () {
