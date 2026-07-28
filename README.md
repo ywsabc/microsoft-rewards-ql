@@ -38,12 +38,13 @@
 
 微软页面与未公开接口随时可能变化。接口没有明确确认成功时，脚本会报告失败或跳过，
 不会仅因为请求已发出就标记成功。
-活动提交后会同时复核 `earn` 与 `getuserinfo` 的明确完成字段；卡片从某个列表消失
-不再被当作完成。
+活动提交后会同时复核 `earn`、`dashboard` 与 `getuserinfo` 的明确完成字段；卡片
+从某个列表消失不再被当作完成。
 
 当前青龙版能识别首页待领取积分，并使用页面同款 Server Action 领取后复核余额。
-仍不会模拟依赖完整浏览器交互的特殊 Punch Card。普通每日活动和卡片会优先通过
-`getuserinfo` 与新版 Rewards Server Action 处理。
+仍不会模拟依赖完整浏览器交互的特殊 Punch Card。当天 3 个每日活动从
+`dashboard` 的 `dailySetItems` 读取，使用新版 Rewards Server Action 处理，并回读
+`dashboard` 的 `isCompleted` 字段逐卡确认；其他普通卡片继续从 `earn` 读取和复核。
 零分引导、长期搜索目标和锁定卡片不会按普通积分卡片提交，但会在结果中明确列出，
 避免把“不可安全自动处理”显示成“全部完成”。
 

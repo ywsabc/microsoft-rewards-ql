@@ -303,6 +303,108 @@ function parseEarnDashboard(html) {
     };
 }
 
+function extractNextFlightJson(html, key, maxLength) {
+    const source = String(html || '');
+    const scriptPattern = /<script[^>]*>([\s\S]*?)<\/script>/g;
+    let match;
+    while ((match = scriptPattern.exec(source)) !== null) {
+        const call = match[1].trim();
+        if (!call.startsWith('self.__next_f.push(')) continue;
+        const start = call.indexOf('(');
+        const end = call.lastIndexOf(')');
+        if (start < 0 || end <= start) continue;
+        const frame = safeJson(call.slice(start + 1, end));
+        if (!Array.isArray(frame) || typeof frame[1] !== 'string') continue;
+        const value = extractEmbeddedJson(frame[1], key, maxLength);
+        if (value !== null) return value;
+    }
+    return null;
+}
+
+function normalizeDashboardDate(value) {
+    const text = String(value || '').trim();
+    let match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (match) {
+        return match[3] + '-'
+            + match[1].padStart(2, '0') + '-'
+            + match[2].padStart(2, '0');
+    }
+    match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (match) {
+        return match[1] + '-'
+            + match[2].padStart(2, '0') + '-'
+            + match[3].padStart(2, '0');
+    }
+    return '';
+}
+
+function rewardsDateKey(lockCN, now) {
+    const options = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    };
+    if (lockCN) options.timeZone = 'Asia/Shanghai';
+    const parts = new Intl.DateTimeFormat('en-US', options)
+        .formatToParts(now || new Date());
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== 'literal') values[part.type] = part.value;
+    }
+    return values.year + '-' + values.month + '-' + values.day;
+}
+
+function parseDashboardDailySet(html, dateKey) {
+    const items = extractNextFlightJson(
+        html,
+        'dailySetItems',
+        200000
+    );
+    if (!Array.isArray(items)) {
+        throw new Error('dashboard 页面未包含每日活动数据');
+    }
+    const targetDate = normalizeDashboardDate(dateKey)
+        || normalizeDashboardDate(items[0] && items[0].date);
+    const seen = new Set();
+    const todayItems = items.filter(function (item) {
+        return (
+            item
+            && normalizeDashboardDate(item.date) === targetDate
+        );
+    }).filter(function (item) {
+        const key = String(item.offerId || '') + ':'
+            + String(item.hash || '');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    return {
+        source: 'dashboard',
+        date: targetDate,
+        dailySetItems: todayItems
+    };
+}
+
+function parseEarnStreakProgress(html) {
+    const clean = String(html || '').replace(/\\"/g, '"');
+    const progresses = [];
+    const seen = new Set();
+    const pattern =
+        /"partner":"([^"]+)","complete":(\d+),"total":(\d+)/g;
+    let match;
+    while ((match = pattern.exec(clean)) !== null) {
+        const partner = match[1];
+        if (seen.has(partner)) continue;
+        seen.add(partner);
+        progresses.push({
+            partner: partner,
+            complete: Number(match[2]),
+            total: Number(match[3])
+        });
+    }
+    return progresses;
+}
+
 function parsePointClaim(html) {
     const clean = String(html || '').replace(/\\"/g, '"');
     const pointClaim = extractEmbeddedJson(clean, 'pointClaim', 100000);
@@ -947,6 +1049,22 @@ class RewardsRunner {
         return parseEarnDashboard(response.text);
     }
 
+    async getDailySetDashboard() {
+        const response = await this.http.request(
+            'https://rewards.bing.com/dashboard',
+            {
+                headers: {
+                    'user-agent': UA.pc,
+                    referer: 'https://rewards.bing.com/'
+                }
+            }
+        );
+        return parseDashboardDailySet(
+            response.text,
+            rewardsDateKey(this.config.lockCN)
+        );
+    }
+
     async getDashboard() {
         let earnError = null;
         try {
@@ -1415,9 +1533,16 @@ class RewardsRunner {
             }
         }
         const dailySets = dashboard.dailySetPromotions || {};
+        const today = rewardsDateKey(this.config.lockCN);
         for (const key of Object.keys(dailySets)) {
+            if (normalizeDashboardDate(key) !== today) continue;
             const items = dailySets[key];
             if (Array.isArray(items)) items.forEach(function (item) { push(item, 'daily'); });
+        }
+        if (Array.isArray(dashboard.dailySetItems)) {
+            dashboard.dailySetItems.forEach(function (item) {
+                push(item, 'daily');
+            });
         }
         for (const collection of [
             dashboard.activityCards,
@@ -1468,7 +1593,18 @@ class RewardsRunner {
     }
 
     async getActivitySnapshot() {
-        const snapshot = this.activitySnapshot(await this.getDashboard());
+        const dashboards = await Promise.all([
+            this.getDashboard(),
+            this.getDailySetDashboard()
+        ]);
+        const combined = Object.assign({}, dashboards[0], {
+            source: [
+                dashboards[0].source || 'getuserinfo',
+                dashboards[1].source || 'dashboard'
+            ].join('+'),
+            dailySetItems: dashboards[1].dailySetItems
+        });
+        const snapshot = this.activitySnapshot(combined);
         this.lastActivitySnapshot = snapshot;
         return snapshot;
     }
@@ -1476,7 +1612,8 @@ class RewardsRunner {
     async getActivityVerificationSnapshots() {
         const attempts = await Promise.allSettled([
             this.getEarnDashboard(),
-            this.getUserInfoDashboard()
+            this.getUserInfoDashboard(),
+            this.getDailySetDashboard()
         ]);
         const snapshots = attempts.filter(function (attempt) {
             return attempt.status === 'fulfilled';
@@ -1556,6 +1693,25 @@ class RewardsRunner {
 
     async claimCard(card) {
         if (card.kind === 'quiz' && !this.config.tasks.has('quiz')) return false;
+        if (
+            card.kind === 'daily'
+            && /^Gamification_DailySet_/i.test(card.offerId)
+        ) {
+            try {
+                await this.reportCardServerAction(card);
+                this.log(
+                    '🟢',
+                    '每日活动已由 Rewards Server Action 接受'
+                );
+                return true;
+            } catch (error) {
+                this.log(
+                    '🟡',
+                    '每日活动 Server Action 失败: ' + error.message
+                );
+                return false;
+            }
+        }
         try {
             await this.reportCardServerAction(card);
             this.log('🟢', 'Rewards 活动提交已由新版页面接口接受');
@@ -2364,13 +2520,32 @@ class RewardsRunner {
             const response = await this.http.request('https://rewards.bing.com/earn', {
                 headers: { 'user-agent': UA.pc, referer: 'https://rewards.bing.com/' }
             });
-            const text = response.text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-            const match = text.match(/每日连续打卡\s*(\d+)/);
-            this.result.streak = match ? match[1] + ' 天' : '未解析到';
-            if (!match) {
-                this.recordFailure('连签', '页面未解析到连续签到天数');
+            const progresses = parseEarnStreakProgress(response.text);
+            const labels = {
+                bing: 'Bing 搜索',
+                dailyset: '每日活动',
+                bingapp: 'Bing App',
+                visualsearch: '视觉搜索'
+            };
+            this.result.streak = progresses.length > 0
+                ? progresses.map(function (progress) {
+                    return (labels[progress.partner] || progress.partner)
+                        + ' ' + progress.complete + '/' + progress.total;
+                }).join('，')
+                : '未解析到';
+            const dailySet = progresses.find(function (progress) {
+                return progress.partner === 'dailyset';
+            });
+            if (!dailySet) {
+                this.recordFailure('连签', '页面未解析到每日活动进度');
+            } else if (dailySet.complete < dailySet.total) {
+                this.recordFailure(
+                    '连签',
+                    '每日活动仍为 ' + dailySet.complete
+                        + '/' + dailySet.total
+                );
             }
-            this.log('📅', '连续签到: ' + this.result.streak);
+            this.log('📅', '连续打卡: ' + this.result.streak);
         } catch (error) {
             this.result.streak = '失败';
             this.recordFailure('连签', error.message);
@@ -2800,6 +2975,9 @@ module.exports = {
     parseBingActivityResponse: parseBingActivityResponse,
     evaluateBingReward: evaluateBingReward,
     parseEarnDashboard: parseEarnDashboard,
+    extractNextFlightJson: extractNextFlightJson,
+    parseDashboardDailySet: parseDashboardDailySet,
+    parseEarnStreakProgress: parseEarnStreakProgress,
     parsePointClaim: parsePointClaim,
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
