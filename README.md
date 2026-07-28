@@ -44,6 +44,8 @@
 当前青龙版能识别首页待领取积分，并使用页面同款 Server Action 领取后复核余额。
 仍不会模拟依赖完整浏览器交互的特殊 Punch Card。普通每日活动和卡片会优先通过
 `getuserinfo` 与新版 Rewards Server Action 处理。
+零分引导、长期搜索目标和锁定卡片不会按普通积分卡片提交，但会在结果中明确列出，
+避免把“不可安全自动处理”显示成“全部完成”。
 
 ## 青龙配置
 
@@ -82,8 +84,9 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 - `cookieFingerprint`：扩展根据两个站点的登录字段生成；核心会重新计算并拒绝指纹
   不一致、Cookie 重复或两个站点 `_U` 不一致的账号。
 - `refreshToken`：推荐配置，用于 App 签到和阅读。
-- `oauthRuid`：浏览器扩展自动写入的匿名账号标识。配置 App 签到/阅读时必须同时
-  提供，用于阻止多账号 Token 串号。
+- `oauthRuid`：浏览器扩展自动写入的匿名账号标识，用于阻止多账号 Token 串号。
+  旧配置缺少此字段时，核心只允许在 Cookie 与 App 余额完全一致后建立本机绑定，
+  仍建议尽快用扩展重新同步。
 - `authCode`：可选的一次性授权码或完整 OAuth 回调 URL。兑换成功后，新的
   `refreshToken` 会保存到 `.state`，之后不再需要配置 `authCode`。
 

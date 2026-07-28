@@ -663,7 +663,12 @@ class RewardsRunner {
         this.state = this.stateStore.data;
         this.accessToken = '';
         this.refreshToken = this.state.refreshToken || account.refreshToken || '';
-        this.expectedOauthRuid = String(account.oauthRuid || '');
+        this.expectedOauthRuid = String(
+            account.oauthRuid || this.state.oauthRuid || ''
+        );
+        if (this.expectedOauthRuid) {
+            this.stateStore.binding.oauthRuid = this.expectedOauthRuid;
+        }
         this.appAccountInfo = null;
         this.preflightRewardsInfo = null;
         this.lastRewardsInfo = null;
@@ -677,6 +682,7 @@ class RewardsRunner {
         this.searchSessionSynced = false;
         this.submittedPromoCards = new Map();
         this.confirmedPromoIds = new Set();
+        this.lastActivitySnapshot = null;
         this.promoSubmissionFailures = 0;
         this.promoDeferred = 0;
         this.promoCooldownSkipped = 0;
@@ -776,14 +782,6 @@ class RewardsRunner {
             this.log('🟡', '未配置 refreshToken/authCode，跳过 App 签到与阅读');
             return false;
         }
-        if (!this.expectedOauthRuid) {
-            this.oauthRefreshError =
-                '缺少 oauthRuid，已阻止未绑定的 OAuth Token 执行';
-            this.oauthBindingError = this.oauthRefreshError;
-            this.log('🔴', this.oauthRefreshError);
-            return false;
-        }
-
         let lastError = null;
         for (const candidate of candidates) {
             const params = new URLSearchParams();
@@ -821,6 +819,30 @@ class RewardsRunner {
                     && appAccountInfo.ruid !== this.expectedOauthRuid
                 ) {
                     throw new Error('OAuth Token 与扩展记录的账号标识不一致');
+                }
+                if (!this.expectedOauthRuid) {
+                    const cookieBalance = this.preflightRewardsInfo
+                        && Number(this.preflightRewardsInfo.balance);
+                    const appBalance = Number(appAccountInfo.balance);
+                    if (
+                        !Number.isFinite(cookieBalance)
+                        || !Number.isFinite(appBalance)
+                        || Math.abs(cookieBalance - appBalance)
+                            > OAUTH_BALANCE_TOLERANCE
+                    ) {
+                        throw new Error(
+                            '缺少 oauthRuid，且无法通过 Cookie/App '
+                                + '余额一致性建立账号绑定'
+                        );
+                    }
+                    this.expectedOauthRuid = appAccountInfo.ruid;
+                    this.stateStore.binding.oauthRuid =
+                        this.expectedOauthRuid;
+                    this.log(
+                        '🟡',
+                        '旧配置缺少 oauthRuid，已通过 Cookie/App '
+                            + '余额一致性建立本机绑定；建议用扩展重新同步'
+                    );
                 }
                 if (
                     this.preflightRewardsInfo
@@ -1406,6 +1428,9 @@ class RewardsRunner {
                 collection.forEach(function (item) { push(item); });
             }
         }
+        const pending = statuses.filter(function (card) {
+            return !card.completed;
+        });
         return {
             source: dashboard.source || 'getuserinfo',
             statuses: statuses,
@@ -1418,12 +1443,34 @@ class RewardsRunner {
                     && !card.locked
                     && !card.skipped
                 );
-            })
+            }),
+            excluded: {
+                zeroPoint: pending.filter(function (card) {
+                    return Boolean(
+                        card.offerId
+                        && card.hash
+                        && card.points <= 0
+                        && !card.locked
+                        && !card.skipped
+                    );
+                }).length,
+                locked: pending.filter(function (card) {
+                    return card.locked;
+                }).length,
+                skipped: pending.filter(function (card) {
+                    return card.skipped;
+                }).length,
+                missingIdentity: pending.filter(function (card) {
+                    return !card.offerId || !card.hash;
+                }).length
+            }
         };
     }
 
     async getActivitySnapshot() {
-        return this.activitySnapshot(await this.getDashboard());
+        const snapshot = this.activitySnapshot(await this.getDashboard());
+        this.lastActivitySnapshot = snapshot;
+        return snapshot;
     }
 
     async getActivityVerificationSnapshots() {
@@ -1451,6 +1498,30 @@ class RewardsRunner {
 
     async discoverCards() {
         return (await this.getActivitySnapshot()).cards;
+    }
+
+    activityExclusionText() {
+        const excluded = this.lastActivitySnapshot
+            && this.lastActivitySnapshot.excluded;
+        if (!excluded) return '';
+        const parts = [];
+        if (excluded.zeroPoint > 0) {
+            parts.push(
+                excluded.zeroPoint + ' 个零分/引导卡片未自动处理'
+            );
+        }
+        if (excluded.locked > 0) {
+            parts.push(excluded.locked + ' 个锁定卡片');
+        }
+        if (excluded.skipped > 0) {
+            parts.push(excluded.skipped + ' 个高风险卡片已跳过');
+        }
+        if (excluded.missingIdentity > 0) {
+            parts.push(
+                excluded.missingIdentity + ' 个卡片缺少服务端标识'
+            );
+        }
+        return parts.join('，');
     }
 
     async verifySubmittedCards(cards) {
@@ -1719,6 +1790,7 @@ class RewardsRunner {
                 return;
             }
             const cards = await this.discoverCards();
+            const exclusionText = this.activityExclusionText();
             const eligibleCards = cards.filter(function (card) {
                 return card.kind !== 'quiz' || this.config.tasks.has('quiz');
             }, this);
@@ -1726,15 +1798,24 @@ class RewardsRunner {
                 '🧩',
                 label + '发现 ' + eligibleCards.length + ' 个可执行未完成卡片'
             );
+            if (exclusionText) {
+                this.log('🟡', '另有 ' + exclusionText);
+            }
             if (this.config.dryRun) {
                 this.result.promos = 'dry-run：发现 '
                     + eligibleCards.length
                     + ' 个可执行未完成活动';
+                if (exclusionText) {
+                    this.result.promos += '；另有 ' + exclusionText;
+                }
                 return;
             }
             if (eligibleCards.length === 0) {
                 this.result.promos =
                     '未发现可执行活动（不等同服务端全部完成）';
+                if (exclusionText) {
+                    this.result.promos += '；另有 ' + exclusionText;
+                }
                 return;
             }
             let ok = 0;
@@ -2400,6 +2481,9 @@ class RewardsRunner {
         try {
             const info = this.preflightRewardsInfo
                 || await this.getRewardsInfo();
+            if (!this.preflightRewardsInfo) {
+                this.preflightRewardsInfo = info;
+            }
             this.lastRewardsInfo = info;
             this.result.startBalance = info.balance;
             this.log('📊', '初始积分: ' + info.balance);

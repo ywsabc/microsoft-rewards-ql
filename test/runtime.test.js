@@ -147,7 +147,7 @@ test('state files are isolated by account identity instead of remark alone', fun
     }
 });
 
-test('OAuth execution is blocked before network access when oauthRuid is missing', async function () {
+test('OAuth identity can bootstrap only from an exact Cookie/App balance match', async function () {
     const runner = new runtime.RewardsRunner(
         {
             name: 'unbound-oauth-test',
@@ -172,14 +172,75 @@ test('OAuth execution is blocked before network access when oauthRuid is missing
         }
     );
     let requests = 0;
-    runner.jsonRequest = async function () {
+    runner.preflightRewardsInfo = { balance: 1234 };
+    runner.jsonRequest = async function (url) {
         requests++;
-        throw new Error('must not request');
+        if (url.includes('oauth20_token')) {
+            return {
+                access_token: 'bootstrap-access-token',
+                refresh_token: 'rotated-refresh-token'
+            };
+        }
+        return {
+            response: {
+                profile: { ruid: 'bootstrapped-oauth-user' },
+                balance: 1234
+            }
+        };
     };
 
-    assert.equal(await runner.refreshOAuth(), false);
-    assert.equal(requests, 0);
-    assert.match(runner.oauthBindingError, /缺少 oauthRuid/);
+    assert.equal(await runner.refreshOAuth({ deferSave: true }), true);
+    assert.equal(requests, 2);
+    assert.equal(
+        runner.expectedOauthRuid,
+        'bootstrapped-oauth-user'
+    );
+    assert.equal(
+        runner.stateStore.binding.oauthRuid,
+        'bootstrapped-oauth-user'
+    );
+});
+
+test('OAuth identity bootstrap rejects a mismatched Cookie/App balance', async function () {
+    const runner = new runtime.RewardsRunner(
+        {
+            name: 'unbound-oauth-mismatch-test',
+            cookie: '_U=account-a',
+            searchCookie: '_U=account-a',
+            refreshToken: 'unbound-refresh-token'
+        },
+        {
+            tasks: new Set(['sign']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: path.join(
+                os.tmpdir(),
+                'microsoft-rewards-unbound-mismatch-' + process.pid
+            )
+        }
+    );
+    runner.preflightRewardsInfo = { balance: 1234 };
+    runner.jsonRequest = async function (url) {
+        if (url.includes('oauth20_token')) {
+            return { access_token: 'wrong-account-access-token' };
+        }
+        return {
+            response: {
+                profile: { ruid: 'wrong-oauth-user' },
+                balance: 9999
+            }
+        };
+    };
+
+    assert.equal(await runner.refreshOAuth({ deferSave: true }), false);
+    assert.equal(runner.expectedOauthRuid, '');
+    assert.match(runner.oauthRefreshError, /无法通过.*余额一致性/);
 });
 
 test('OAuth conflict resolver keeps only the cookie account matching the App balance', function () {
@@ -841,13 +902,22 @@ test('activity string false remains pending instead of becoming completed', asyn
     runner.getDashboard = async function () {
         return {
             source: 'test-dashboard',
-            activityCards: [{
-                title: 'pending string false',
-                points: 10,
-                offerId: 'pending-offer',
-                hash: 'pending-hash',
-                isCompleted: 'false'
-            }]
+            activityCards: [
+                {
+                    title: 'pending string false',
+                    points: 10,
+                    offerId: 'pending-offer',
+                    hash: 'pending-hash',
+                    isCompleted: 'false'
+                },
+                {
+                    title: 'manual onboarding card',
+                    points: 0,
+                    offerId: 'zero-point-offer',
+                    hash: 'zero-point-hash',
+                    isCompleted: false
+                }
+            ]
         };
     };
 
@@ -855,6 +925,10 @@ test('activity string false remains pending instead of becoming completed', asyn
     assert.equal(cards.length, 1);
     assert.equal(cards[0].offerId, 'pending-offer');
     assert.equal(cards[0].completed, false);
+    assert.match(
+        runner.activityExclusionText(),
+        /1 个零分\/引导卡片未自动处理/
+    );
 });
 
 test('activity verification requires an explicit server-completed status', async function () {
