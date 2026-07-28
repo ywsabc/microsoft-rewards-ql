@@ -1,0 +1,75 @@
+name: Refresh jsDelivr
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - microsoft_rewards_ql.js
+      - microsoft_rewards_task_*.js
+      - .github/workflows/purge-jsdelivr.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jsdelivr-main
+  cancel-in-progress: true
+
+jobs:
+  purge-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Purge cached script files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(microsoft_rewards_ql.js microsoft_rewards_task_*.js)
+          for file in "${files[@]}"; do
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 3 \
+              --connect-timeout 10 \
+              --max-time 30 \
+              "https://purge.jsdelivr.net/gh/ywsabc/microsoft-rewards-ql@main/${file}" \
+              >/dev/null
+          done
+
+      - name: Verify CDN bytes match main
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(microsoft_rewards_ql.js microsoft_rewards_task_*.js)
+          for attempt in $(seq 1 24); do
+            all_current=true
+            for file in "${files[@]}"; do
+              target="${RUNNER_TEMP}/jsdelivr-${file}"
+              curl \
+                --fail \
+                --silent \
+                --show-error \
+                --retry 3 \
+                --connect-timeout 10 \
+                --max-time 30 \
+                "https://cdn.jsdelivr.net/gh/ywsabc/microsoft-rewards-ql@main/${file}" \
+                --output "${target}"
+              if ! cmp --silent "${file}" "${target}"; then
+                all_current=false
+                break
+              fi
+            done
+            if "${all_current}"; then
+              echo "jsDelivr matches the checked-out main branch."
+              exit 0
+            fi
+            if [ "${attempt}" -lt 24 ]; then
+              sleep 5
+            fi
+          done
+          echo "jsDelivr still differs from the checked-out main branch." >&2
+          exit 1
