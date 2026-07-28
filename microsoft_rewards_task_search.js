@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * name: 微软积分-04电脑搜索
- * cron: 47 10 * * *
+ * cron: 47 10,12,14,16,18 * * *
  */
 // SPDX-License-Identifier: MIT
 'use strict';

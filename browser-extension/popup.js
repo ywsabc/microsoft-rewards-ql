@@ -371,6 +371,7 @@ function exportAccounts(requireTokens) {
             name: account.name,
             cookie: account.cookie,
             searchCookie: account.searchCookie,
+            cookieFingerprint: account.cookieFingerprint,
             refreshToken: account.refreshToken || '',
             oauthRuid: account.oauthRuid || ''
         };
@@ -509,6 +510,9 @@ async function getQingLongAccounts(origin, apiToken) {
             name: String(item.name),
             cookie: String(item.cookie),
             searchCookie: String(item.searchCookie || item.cookie),
+            cookieFingerprint: String(
+                item.cookieFingerprint || item.cookie_fingerprint || ''
+            ),
             refreshToken: String(item.refreshToken || item.refresh_token || ''),
             oauthRuid: String(item.oauthRuid || item.oauth_ruid || '')
         };
@@ -569,6 +573,7 @@ async function syncToQingLong(mode) {
             name: selected.name,
             cookie: selected.cookie,
             searchCookie: selected.searchCookie,
+            cookieFingerprint: selected.cookieFingerprint,
             refreshToken: selected.refreshToken,
             oauthRuid: selected.oauthRuid || ''
         }];

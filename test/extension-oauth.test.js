@@ -14,6 +14,28 @@ function createBackgroundHarness() {
     const listeners = {};
     const tabUpdates = [];
     let nextTabId = 40;
+    let currentSuffix = '1';
+    const balanceForSuffix = function (suffix) {
+        return Number(suffix) * 1000;
+    };
+    const fingerprintForSuffix = function (suffix) {
+        return crypto.createHash('sha256').update([
+            'u-' + suffix,
+            'auth-' + suffix,
+            'u-' + suffix
+        ].join('\n')).digest('hex');
+    };
+    const cookie = function (name, value, domain, hostOnly) {
+        return {
+            name: name,
+            value: value,
+            domain: domain,
+            hostOnly: Boolean(hostOnly),
+            path: '/',
+            secure: true,
+            session: true
+        };
+    };
     const filterKeys = function (keys) {
         if (!Array.isArray(keys)) return Object.assign({}, session);
         return Object.fromEntries(keys
@@ -52,7 +74,27 @@ function createBackgroundHarness() {
                 }
             }
         },
+        cookies: {
+            getAll: function (query, callback) {
+                if (String(query.url).includes('rewards.bing.com')) {
+                    callback([
+                        cookie('_U', 'u-' + currentSuffix, '.bing.com', false),
+                        cookie(
+                            '.MSA.Auth',
+                            'auth-' + currentSuffix,
+                            'rewards.bing.com',
+                            true
+                        )
+                    ]);
+                    return;
+                }
+                callback([
+                    cookie('_U', 'u-' + currentSuffix, '.bing.com', false)
+                ]);
+            }
+        },
         runtime: {
+            lastError: null,
             getURL: function (file) { return 'chrome-extension://test/' + file; },
             onMessage: { addListener: function (listener) { listeners.message = listener; } }
         }
@@ -67,21 +109,48 @@ function createBackgroundHarness() {
         chrome: chrome,
         console: console,
         crypto: crypto.webcrypto,
+        TextEncoder: TextEncoder,
         fetch: async function (url, options) {
+            if (String(url).startsWith(
+                'https://rewards.bing.com/api/getuserinfo'
+            )) {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async function () {
+                        return {
+                            dashboard: {
+                                userStatus: {
+                                    availablePoints:
+                                        balanceForSuffix(currentSuffix)
+                                }
+                            }
+                        };
+                    }
+                };
+            }
             if (String(url).startsWith(
                 'https://prod.rewardsplatform.microsoft.com/dapi/me'
             )) {
                 const accessToken = String(options.headers.authorization || '')
                     .replace(/^Bearer\s+/, '');
-                const suffix = accessToken.replace(/^access-authorization-code-/, '');
+                const code = accessToken.replace(/^access-/, '');
+                const suffix = code === 'duplicate-account-2'
+                    ? '2'
+                    : code.replace(/^authorization-code-/, '');
+                const ruidSuffix = code === 'duplicate-account-2'
+                    ? '1'
+                    : suffix;
                 return {
                     ok: true,
                     status: 200,
                     json: async function () {
                         return {
                             response: {
-                                profile: { ruid: 'rewards-user-' + suffix },
-                                balance: suffix === '1' ? 1000 : 2000
+                                profile: {
+                                    ruid: 'rewards-user-' + ruidSuffix
+                                },
+                                balance: balanceForSuffix(suffix)
                             }
                         };
                     }
@@ -117,41 +186,52 @@ function createBackgroundHarness() {
     };
     return {
         finishOAuth: finishOAuth,
+        fingerprint: fingerprintForSuffix,
         send: send,
         session: session,
-        tabUpdates: tabUpdates
+        tabUpdates: tabUpdates,
+        useAccount: function (suffix) {
+            currentSuffix = String(suffix);
+        }
     };
 }
 
-async function capture(harness, name, fingerprint) {
+async function capture(harness, name, suffix, options) {
+    const selectedSuffix = String(suffix);
+    const captureOptions = options || {};
+    harness.useAccount(selectedSuffix);
     return harness.send({
         type: 'accounts:capture',
-        mode: 'new',
+        mode: captureOptions.mode || 'new',
+        accountId: captureOptions.accountId || '',
         name: name,
-        cookieFingerprint: fingerprint,
-        cookie: 'rewards-' + fingerprint,
-        searchCookie: 'search-' + fingerprint
+        cookieFingerprint: harness.fingerprint(selectedSuffix),
+        cookie: '_U=u-' + selectedSuffix
+            + '; .MSA.Auth=auth-' + selectedSuffix,
+        searchCookie: '_U=u-' + selectedSuffix
     });
 }
 
 test('OAuth flow stores a separate refreshToken for every account', async function () {
     const harness = createBackgroundHarness();
-    const first = await capture(harness, '账号1', 'fingerprint-1');
-    const second = await capture(harness, '账号2', 'fingerprint-2');
+    const first = await capture(harness, '账号1', 1);
+    const second = await capture(harness, '账号2', 2);
 
+    harness.useAccount(1);
     await harness.send({
         type: 'oauth:start',
         accountId: first.account.id,
-        cookieFingerprint: 'fingerprint-1'
+        cookieFingerprint: first.account.cookieFingerprint
     });
     assert.equal(harness.tabUpdates[0].options.url, 'about:blank');
     assert.equal(harness.session.oauthAccountId, first.account.id);
     await harness.finishOAuth('authorization-code-1');
 
+    harness.useAccount(2);
     await harness.send({
         type: 'oauth:start',
         accountId: second.account.id,
-        cookieFingerprint: 'fingerprint-2'
+        cookieFingerprint: second.account.cookieFingerprint
     });
     await harness.finishOAuth('authorization-code-2');
 
@@ -171,29 +251,34 @@ test('OAuth flow stores a separate refreshToken for every account', async functi
         accountId: second.account.id
     });
     assert.equal(firstStatus.status, 'ready');
-    assert.equal(firstStatus.cookieFingerprint, 'fingerprint-1');
+    assert.equal(
+        firstStatus.cookieFingerprint,
+        harness.fingerprint(1)
+    );
     assert.equal(secondToken.refreshToken, 'refresh-authorization-code-2');
     assert.equal(secondToken.oauthRuid, 'rewards-user-2');
 });
 
 test('OAuth flow rejects a Microsoft account already bound to another remark', async function () {
     const harness = createBackgroundHarness();
-    const first = await capture(harness, '账号1', 'fingerprint-1');
-    const second = await capture(harness, '账号2', 'fingerprint-2');
+    const first = await capture(harness, '账号1', 1);
+    const second = await capture(harness, '账号2', 2);
 
+    harness.useAccount(1);
     await harness.send({
         type: 'oauth:start',
         accountId: first.account.id,
-        cookieFingerprint: 'fingerprint-1'
+        cookieFingerprint: first.account.cookieFingerprint
     });
     await harness.finishOAuth('authorization-code-1');
 
+    harness.useAccount(2);
     await harness.send({
         type: 'oauth:start',
         accountId: second.account.id,
-        cookieFingerprint: 'fingerprint-2'
+        cookieFingerprint: second.account.cookieFingerprint
     });
-    await harness.finishOAuth('authorization-code-1');
+    await harness.finishOAuth('duplicate-account-2');
 
     const status = await harness.send({
         type: 'oauth:status',
@@ -209,19 +294,30 @@ test('OAuth flow rejects a Microsoft account already bound to another remark', a
 
 test('account remark is unique and updating it rebinds the existing record', async function () {
     const harness = createBackgroundHarness();
-    const first = await capture(harness, '主账号', 'old-fingerprint');
-    const second = await capture(harness, '备用账号', 'second-fingerprint');
+    const first = await capture(harness, '主账号', 1);
+    const second = await capture(harness, '备用账号', 2);
 
+    harness.useAccount(1);
     await harness.send({
         type: 'oauth:start',
         accountId: first.account.id,
-        cookieFingerprint: 'old-fingerprint'
+        cookieFingerprint: first.account.cookieFingerprint
     });
-    await harness.finishOAuth('old-code');
+    await harness.finishOAuth('authorization-code-1');
 
-    const rebound = await capture(harness, '主账号', 'new-fingerprint');
+    await assert.rejects(
+        capture(harness, '主账号', 3),
+        /已绑定其他浏览器会话/
+    );
+    const rebound = await capture(harness, '主账号', 3, {
+        mode: 'replace',
+        accountId: first.account.id
+    });
     assert.equal(rebound.account.id, first.account.id);
-    assert.equal(rebound.account.cookieFingerprint, 'new-fingerprint');
+    assert.equal(
+        rebound.account.cookieFingerprint,
+        harness.fingerprint(3)
+    );
     assert.equal(rebound.account.refreshToken, '');
     assert.equal(rebound.account.oauthRuid, '');
 
@@ -238,4 +334,46 @@ test('account remark is unique and updating it rebinds the existing record', asy
     const list = await harness.send({ type: 'accounts:list' });
     assert.equal(list.accounts.length, 1);
     assert.equal(list.accounts[0].name, '备用账号');
+});
+
+test('OAuth callback rejects a browser account switch during authorization', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 1);
+    await capture(harness, '账号2', 2);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    harness.useAccount(2);
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /回调时浏览器已切换/);
+});
+
+test('OAuth callback rejects a different account even when the browser cookie stayed put', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    await harness.finishOAuth('authorization-code-2');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /余额.*不一致.*串号/);
 });

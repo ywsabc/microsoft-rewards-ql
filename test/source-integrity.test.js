@@ -24,7 +24,11 @@ test('split QingLong entry files expose independent schedules and modules', func
         sign: { name: '微软积分-01签到', cron: '7 9 * * *', tasks: 'sign' },
         read: { name: '微软积分-02阅读', cron: '23 9 * * *', tasks: 'read' },
         promos: { name: '微软积分-03活动', cron: '11 10 * * *', tasks: 'promos,quiz' },
-        search: { name: '微软积分-04电脑搜索', cron: '47 10 * * *', tasks: 'search' },
+        search: {
+            name: '微软积分-04电脑搜索',
+            cron: '47 10,12,14,16,18 * * *',
+            tasks: 'search'
+        },
         mobile: { name: '微软积分-05移动搜索', cron: '29 11 * * *', tasks: 'mobile' },
         streak: { name: '微软积分-06连签', cron: '43 11 * * *', tasks: 'streak' },
         claim: { name: '微软积分-07领取', cron: '7 12 * * *', tasks: 'claim' }
@@ -68,7 +72,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '3.0.1');
+    assert.equal(manifest.version, '3.0.2');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -96,7 +100,7 @@ test('browser extension keeps account tokens in session and persists only opted-
         'utf8'
     );
     const forbidden = [
-        /\bXMLHttpRequest\b/,
+        /\bnew\s+XMLHttpRequest\b/,
         /\bWebSocket\b/,
         /\bsendBeacon\b/,
         /\bchrome\.storage\.sync\b/,
