@@ -834,6 +834,45 @@ test('claimCard prefers the Rewards Server Action over compatibility APIs', asyn
     assert.equal(serverActions, 1);
 });
 
+test('daily-set cards use the Rewards Server Action without compatibility fallbacks', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'daily-set-flow-test', cookie: 'WLS=session; _U=auth' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 3,
+            stateDir:
+                '/tmp/microsoft-rewards-ql-daily-set-flow-'
+                + process.pid
+        }
+    );
+    let serverActions = 0;
+    runner.reportDailyActivity = async function (destination) {
+        throw new Error(
+            'daily set must not use a compatibility page report: '
+                + destination
+        );
+    };
+    runner.reportCardServerAction = async function () {
+        serverActions++;
+        return true;
+    };
+    const ok = await runner.claimCard({
+        offerId: 'Gamification_DailySet_ZHCN_20260728_Child1',
+        hash: 'daily-hash',
+        kind: 'daily',
+        url: 'https://www.bing.com/search?q=test&rnoreward=1'
+    });
+    assert.equal(ok, true);
+    assert.equal(serverActions, 1);
+});
+
 test('discoverCards excludes locked level-benefit activities', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'locked-card-test', cookie: 'WLS=session; _U=auth' },
@@ -873,6 +912,9 @@ test('discoverCards excludes locked level-benefit activities', async function ()
                 }
             ]
         };
+    };
+    runner.getDailySetDashboard = async function () {
+        return { source: 'dashboard', dailySetItems: [] };
     };
     const cards = await runner.discoverCards();
     assert.deepEqual(cards.map(function (card) { return card.offerId; }), [
@@ -919,6 +961,9 @@ test('activity string false remains pending instead of becoming completed', asyn
                 }
             ]
         };
+    };
+    runner.getDailySetDashboard = async function () {
+        return { source: 'dashboard', dailySetItems: [] };
     };
 
     const cards = await runner.discoverCards();
@@ -1278,6 +1323,121 @@ test('parseEarnDashboard extracts balance, search quota, and activity cards', fu
     }]);
     assert.equal(dashboard.morePromotions.length, 1);
     assert.equal(dashboard.morePromotions[0].offerId, 'offer-1');
+});
+
+test('parseDashboardDailySet decodes RSC data and keeps only the requested day', function () {
+    const items = [
+        {
+            date: '07/28/2026',
+            title: '活动一',
+            description: '包含括号 (测试) 的 RSC 文本',
+            points: 10,
+            offerId: 'Gamification_DailySet_ZHCN_20260728_Child1',
+            hash: 'hash-1',
+            isCompleted: false,
+            destination:
+                'https://www.bing.com/search?q=one&rnoreward=1'
+        },
+        {
+            date: '07/28/2026',
+            title: '活动二',
+            points: 10,
+            offerId: 'Gamification_DailySet_ZHCN_20260728_Child2',
+            hash: 'hash-2',
+            isCompleted: true,
+            destination:
+                'https://www.bing.com/search?q=two&rnoreward=1'
+        },
+        {
+            date: '07/29/2026',
+            title: '明日活动',
+            points: 10,
+            offerId: 'Gamification_DailySet_ZHCN_20260729_Child1',
+            hash: 'hash-next',
+            isCompleted: false,
+            destination:
+                'https://www.bing.com/search?q=next&rnoreward=1'
+        }
+    ];
+    const payload = '42:' + JSON.stringify({ dailySetItems: items });
+    const html = '<script>self.__next_f.push('
+        + JSON.stringify([1, payload]) + ')</script>';
+    const dashboard = runtime.parseDashboardDailySet(
+        html,
+        '2026-07-28'
+    );
+    assert.equal(dashboard.source, 'dashboard');
+    assert.equal(dashboard.date, '2026-07-28');
+    assert.deepEqual(
+        dashboard.dailySetItems.map(function (item) {
+            return item.offerId;
+        }),
+        [
+            'Gamification_DailySet_ZHCN_20260728_Child1',
+            'Gamification_DailySet_ZHCN_20260728_Child2'
+        ]
+    );
+});
+
+test('discoverCards combines earn cards with pending dashboard daily-set items', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'daily-set-discovery-test', cookie: '_U=account-a' },
+        {
+            tasks: new Set(['promos']),
+            lockCN: true,
+            dryRun: true,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 1,
+            searchSource: 'local',
+            maxPromos: 10,
+            stateDir:
+                '/tmp/microsoft-rewards-ql-daily-set-discovery-'
+                + process.pid
+        }
+    );
+    runner.getDashboard = async function () {
+        return { source: 'earn', activityCards: [] };
+    };
+    runner.getDailySetDashboard = async function () {
+        return {
+            source: 'dashboard',
+            dailySetItems: [
+                {
+                    date: '07/28/2026',
+                    title: '真实每日活动',
+                    points: 10,
+                    offerId:
+                        'Gamification_DailySet_ZHCN_20260728_Child1',
+                    hash: 'daily-hash',
+                    isCompleted: false,
+                    destination:
+                        'https://www.bing.com/search?q=test&rnoreward=1'
+                }
+            ]
+        };
+    };
+    const cards = await runner.discoverCards();
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].kind, 'daily');
+    assert.equal(
+        cards[0].offerId,
+        'Gamification_DailySet_ZHCN_20260728_Child1'
+    );
+});
+
+test('parseEarnStreakProgress reads the current daily-set counter', function () {
+    const html = [
+        '<script>self.__next_f.push([1,"',
+        '\\"partner\\":\\"bing\\",\\"complete\\":1,\\"total\\":1,',
+        '\\"partner\\":\\"dailyset\\",\\"complete\\":0,\\"total\\":3',
+        '"])</script>'
+    ].join('');
+    assert.deepEqual(runtime.parseEarnStreakProgress(html), [
+        { partner: 'bing', complete: 1, total: 1 },
+        { partner: 'dailyset', complete: 0, total: 3 }
+    ]);
 });
 
 test('search rounds retain the upstream 4-7 request limit', function () {
