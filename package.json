@@ -1,6 +1,6 @@
 {
   "name": "microsoft-rewards-ql",
-  "version": "3.0.2-ql.14",
+  "version": "3.0.2-ql.15",
   "private": true,
   "description": "Microsoft Rewards v3.0.2 refactored for QingLong",
   "license": "MIT",
@@ -10,6 +10,8 @@
   },
   "scripts": {
     "check": "node --check microsoft_rewards_ql.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:online": "node test/online-smoke.js",
+    "test:account": "BING_REWARDS_DRY_RUN=1 BING_REWARDS_NOTIFY=0 node microsoft_rewards_ql.js"
   }
 }

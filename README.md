@@ -14,7 +14,7 @@
 - `LICENSE`：MIT License，保留原作者署名。
 - `AUDIT.md`：质量审查、规格矩阵和已知技术债。
 - `docs/QINGLONG.md`：青龙拉取、自动创建任务、定时配置和首次运行教程。
-- `test/`：不联网的运行时、安全与源码完整性测试。
+- `test/`：离线运行时、安全、源码完整性测试，以及显式运行的只读在线冒烟测试。
 
 原始源码 SHA-256：
 
@@ -97,13 +97,15 @@ BING_REWARDS_AUTH_CODE
 | `BING_REWARDS_LOCK_CN` | `1` | 非大陆出口 IP 时停止 |
 | `BING_REWARDS_DRY_RUN` | `0` | `1` 时只查询，不提交任务 |
 | `BING_REWARDS_NOTIFY` | `1` | 是否调用根目录 `sendNotify.js` |
+| `BING_REWARDS_START_DELAY_MIN` | `5` | 真实执行前随机等待的最小秒数 |
+| `BING_REWARDS_START_DELAY_MAX` | `95` | 真实执行前随机等待的最大秒数，与原版一致 |
 | `BING_REWARDS_SEARCH_INTERVAL` | `30` | 搜索基础间隔秒数，实际加入 ±15 秒随机量 |
-| `BING_REWARDS_SEARCH_COUNT` | `6` | 每轮最多搜索次数 |
+| `BING_REWARDS_SEARCH_COUNT` | `7` | 每轮上限；实际按原版随机执行 4–7 次 |
 | `BING_REWARDS_MOBILE_SEARCH_COUNT` | `3` | 每轮最多移动搜索次数；新版国区 Rewards 通常与 PC 共用搜索配额 |
 | `BING_REWARDS_SEARCH_SOURCE` | `hot` | `hot/auto` 使用热搜多源并失败回退；`local/offline` 只用本地词库 |
 | `BING_REWARDS_MAX_PROMOS` | `20` | 每轮最多处理活动卡片数 |
 | `BING_REWARDS_PROMO_RETRY_HOURS` | `12` | 未确认活动卡片的最短重试间隔，避免定时任务重复提交 |
-| `BING_REWARDS_DELAY_SCALE` | `1` | 随机等待倍率；生产环境建议保持 `1` |
+| `BING_REWARDS_DELAY_SCALE` | `1` | 随机等待倍率，范围 `1–10`；不允许关闭生产等待 |
 | `BING_REWARDS_STATE_DIR` | 当前目录下 `.state` | 令牌状态目录 |
 
 布尔变量可以使用 `1/0`、`true/false`、`yes/no` 或 `on/off`。
@@ -134,14 +136,27 @@ task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_mobile.js
 BING_REWARDS_DRY_RUN=1
 ```
 
-确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。7 个任务默认在
-09:07 至 12:07 之间错峰执行，具体时间见教程。
+确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。普通任务默认在
+09:07 至 12:07 之间错峰执行；电脑搜索在白天分 5 轮执行，具体时间见教程。
 
 本地/青龙 Node.js 验证：
 
 ```sh
 cd MicrosoftRewardsQL
 npm test
+```
+
+不带账号 Cookie、不会提交 Rewards 活动的真实在线只读检查：
+
+```sh
+npm run test:online
+```
+
+已经配置账号环境变量后，可执行真实账号只读验收；命令会强制 `dry-run`，不会刷新
+OAuth、写令牌或提交任务：
+
+```sh
+npm run test:account
 ```
 
 ## 安全与风险
@@ -156,6 +171,8 @@ npm test
   才回退本地词库。热搜请求使用独立的无 Cookie HTTP 客户端，不会携带 Microsoft
   Cookie、OAuth Token 或青龙密钥；第三方仍能看到青龙主机的出口 IP 和请求时间。
 - 使用热搜词只能减少固定、重复搜索词，不能保证避免 Microsoft Rewards 风控。
+- 电脑搜索按 10:47、12:47、14:47、16:47、18:47 分轮执行，每轮随机 4–7 次；
+  连续三轮服务端配额不增长时当天熔断，不再继续提交。不要另设高频重复任务。
 
 ## 许可证与来源
 

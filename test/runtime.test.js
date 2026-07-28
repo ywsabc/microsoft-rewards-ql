@@ -105,6 +105,35 @@ test('App sign-in accepts a zero-point activity without claiming points', async 
     });
 });
 
+test('a successful PC sign-in does not hide an App branch failure', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'partial-sign-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['sign']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-partial-sign-' + process.pid
+        }
+    );
+    runner.accessToken = 'test-access-token';
+    runner.signApp = async function () {
+        throw new Error('DAPI unavailable');
+    };
+    runner.signPC = async function () { return 1; };
+    runner.delay = async function () {};
+
+    await runner.runSign();
+
+    assert.match(runner.result.sign, /完成 \+1.*App 分支失败/);
+    assert.match(runner.result.failures[0], /App 分支失败/);
+});
+
 test('HttpClient follows redirects and retains response cookies', async function (context) {
     const server = http.createServer(function (request, response) {
         if (request.url === '/start') {
@@ -722,6 +751,42 @@ test('the second promo scan never submits a new card', async function () {
     assert.match(runner.result.promos, /二扫无待确认/);
 });
 
+test('a failed promo submission remains visible after the second scan', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'promo-failure-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['promos', 'quiz']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            searchSource: 'local',
+            maxPromos: 1,
+            promoRetryHours: 12,
+            stateDir: '/tmp/microsoft-rewards-ql-promo-failure-' + process.pid
+        }
+    );
+    const card = {
+        title: 'failed card',
+        points: 10,
+        offerId: 'failed-offer',
+        hash: 'hash',
+        kind: 'open_only',
+        url: 'https://www.bing.com/search?q=test'
+    };
+    runner.stateStore.save = function () {};
+    runner.discoverCards = async function () { return [card]; };
+    runner.claimCard = async function () { return false; };
+    runner.delay = async function () {};
+
+    await runner.runPromos(false);
+    await runner.runPromos(true);
+
+    assert.match(runner.result.failures[0], /卡片提交失败/);
+});
+
 test('legacy Rewards activity is not submitted without a verification token', async function () {
     const runner = new runtime.RewardsRunner(
         { name: 'legacy-protocol-test', cookie: 'WLS=session; _U=auth' },
@@ -800,6 +865,9 @@ test('buildConfig supports hot and local search sources', function () {
     assert.equal(runtime.buildConfig().searchSource, 'hot');
     assert.equal(runtime.buildConfig().promoRetryHours, 12);
     assert.equal(runtime.buildConfig().mobileSearchCount, 3);
+    assert.equal(runtime.buildConfig().searchCount, 7);
+    assert.equal(runtime.buildConfig().startDelayMin, 5);
+    assert.equal(runtime.buildConfig().startDelayMax, 95);
     assert.equal(runtime.buildConfig().tasks.has('mobile'), true);
     if (previous === undefined) delete process.env.BING_REWARDS_SEARCH_SOURCE;
     else process.env.BING_REWARDS_SEARCH_SOURCE = previous;
@@ -823,4 +891,209 @@ test('parseEarnDashboard extracts balance, search quota, and activity cards', fu
     }]);
     assert.equal(dashboard.morePromotions.length, 1);
     assert.equal(dashboard.morePromotions[0].offerId, 'offer-1');
+});
+
+test('search rounds retain the upstream 4-7 request limit', function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'search-round-size-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['search']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            mobileSearchCount: 3,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-round-size-' + process.pid
+        }
+    );
+    for (let index = 0; index < 100; index++) {
+        const count = runner.getSearchRoundCount();
+        assert.ok(count >= 4 && count <= 7);
+    }
+});
+
+test('search count configuration cannot exceed the upstream round limit', function () {
+    const previous = {
+        count: process.env.BING_REWARDS_SEARCH_COUNT,
+        interval: process.env.BING_REWARDS_SEARCH_INTERVAL,
+        scale: process.env.BING_REWARDS_DELAY_SCALE,
+        start: process.env.BING_REWARDS_START_DELAY_MIN
+    };
+    process.env.BING_REWARDS_SEARCH_COUNT = '30';
+    process.env.BING_REWARDS_SEARCH_INTERVAL = '1';
+    process.env.BING_REWARDS_DELAY_SCALE = '0';
+    process.env.BING_REWARDS_START_DELAY_MIN = '0';
+    const config = runtime.buildConfig();
+    assert.equal(config.searchCount, 7);
+    assert.equal(config.searchInterval, 30);
+    assert.equal(config.delayScale, 1);
+    assert.equal(config.startDelayMin, 5);
+    const names = {
+        count: 'BING_REWARDS_SEARCH_COUNT',
+        interval: 'BING_REWARDS_SEARCH_INTERVAL',
+        scale: 'BING_REWARDS_DELAY_SCALE',
+        start: 'BING_REWARDS_START_DELAY_MIN'
+    };
+    for (const [key, name] of Object.entries(names)) {
+        if (previous[key] === undefined) delete process.env[name];
+        else process.env[name] = previous[key];
+    }
+});
+
+test('a failed Bing request does not abort the remaining search round', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'search-partial-request-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['search']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 2,
+            mobileSearchCount: 1,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-partial-' + process.pid
+        }
+    );
+    let infoReads = 0;
+    runner.getRewardsInfo = async function () {
+        infoReads++;
+        return infoReads === 1
+            ? { balance: 1000, pc: { progress: 0, max: 60 } }
+            : { balance: 1003, pc: { progress: 3, max: 60 } };
+    };
+    runner.getSearchQueries = async function () {
+        return ['first', 'second'];
+    };
+    let requests = 0;
+    runner.searchOnce = async function () {
+        requests++;
+        if (requests === 1) throw new Error('temporary SERP error');
+        return { increment: 3, balance: 1003 };
+    };
+    runner.delay = async function () {};
+    runner.stateStore.save = function () {};
+
+    await runner.runSearch();
+
+    assert.equal(requests, 2);
+    assert.match(runner.result.search, /^3\/60/);
+    assert.equal(runner.result.failures.length, 0);
+});
+
+test('search never submits when the server quota cannot be parsed', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'search-missing-quota-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['search']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            mobileSearchCount: 3,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-missing-quota-' + process.pid
+        }
+    );
+    runner.getRewardsInfo = async function () {
+        return { balance: 1000, pc: { progress: 0, max: 0 } };
+    };
+    runner.searchOnce = async function () {
+        throw new Error('must not submit');
+    };
+
+    await runner.runSearch();
+
+    assert.match(runner.result.search, /未解析到搜索配额/);
+    assert.equal(runner.result.failures.length, 1);
+});
+
+test('three unchanged server rounds trigger the daily search circuit breaker', function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'search-circuit-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['search']),
+            lockCN: true,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            mobileSearchCount: 3,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-circuit-' + process.pid
+        }
+    );
+    runner.stateStore.save = function () {};
+    const unchanged = {
+        balance: 1000,
+        pc: { progress: 9, max: 60 }
+    };
+    runner.saveSearchRound(unchanged, unchanged);
+    runner.saveSearchRound(unchanged, unchanged);
+    const control = runner.saveSearchRound(unchanged, unchanged);
+    assert.equal(control.noProgressRounds, 3);
+    assert.equal(control.paused, true);
+});
+
+test('split task execution does not wait for disabled modules', async function () {
+    const runner = new runtime.RewardsRunner(
+        { name: 'split-stage-test', cookie: 'MUID=fake' },
+        {
+            tasks: new Set(['search']),
+            lockCN: false,
+            dryRun: false,
+            notify: false,
+            delayScale: 0,
+            searchInterval: 30,
+            searchCount: 7,
+            mobileSearchCount: 3,
+            searchSource: 'local',
+            maxPromos: 1,
+            stateDir: '/tmp/microsoft-rewards-ql-stage-' + process.pid
+        }
+    );
+    let infoReads = 0;
+    runner.getRewardsInfo = async function () {
+        infoReads++;
+        return { balance: 1000, pc: { progress: 60, max: 60 } };
+    };
+    runner.checkRegion = async function () { return true; };
+    let searches = 0;
+    runner.runSearch = async function () { searches++; };
+    const waits = [];
+    runner.delay = async function (min, max) {
+        waits.push([min, max]);
+    };
+
+    await runner.run();
+
+    assert.equal(searches, 1);
+    assert.equal(infoReads, 1);
+    assert.deepEqual(waits, []);
+});
+
+test('any account-level or module-level failure makes the run fail', function () {
+    assert.equal(runtime.resultsHaveFailures([
+        { failures: [] },
+        { failures: ['搜索：失败'] }
+    ]), true);
+    assert.equal(runtime.resultsHaveFailures([
+        { failures: [] },
+        { error: 'Cookie 无效', failures: [] }
+    ]), true);
+    assert.equal(runtime.resultsHaveFailures([
+        { failures: [] },
+        { failures: [] }
+    ]), false);
 });

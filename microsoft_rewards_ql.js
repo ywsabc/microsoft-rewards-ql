@@ -173,6 +173,19 @@ function todayKeys() {
     ];
 }
 
+function taskDateKey(lockCN) {
+    const options = lockCN ? { timeZone: 'Asia/Shanghai' } : {};
+    const parts = new Intl.DateTimeFormat('en-CA', Object.assign({
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }, options)).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map(function (part) {
+        return [part.type, part.value];
+    }));
+    return values.year + '-' + values.month + '-' + values.day;
+}
+
 function safeJson(text) {
     try {
         return JSON.parse(text);
@@ -532,6 +545,7 @@ class RewardsRunner {
         this.expectedOauthRuid = String(account.oauthRuid || '');
         this.appAccountInfo = null;
         this.preflightRewardsInfo = null;
+        this.lastRewardsInfo = null;
         this.oauthPreflightDone = false;
         this.oauthBindingError = '';
         this.oauthRefreshError = '';
@@ -541,6 +555,9 @@ class RewardsRunner {
         this.host = 'www.bing.com';
         this.searchSessionSynced = false;
         this.submittedPromoIds = new Set();
+        this.promoSubmissionFailures = 0;
+        this.promoDeferred = 0;
+        this.promoCooldownSkipped = 0;
         this.promoAttempts = this.state.promoAttempts
             && typeof this.state.promoAttempts === 'object'
             ? this.state.promoAttempts
@@ -556,7 +573,8 @@ class RewardsRunner {
             promos: '未执行',
             search: '未执行',
             mobileSearch: '未执行',
-            streak: '未执行'
+            streak: '未执行',
+            failures: []
         };
     }
 
@@ -569,6 +587,13 @@ class RewardsRunner {
     async delay(min, max) {
         const value = randomInt(min, max) * this.config.delayScale;
         if (value > 0) await sleep(value);
+    }
+
+    recordFailure(task, message) {
+        const text = task + '：' + message;
+        if (!this.result.failures.includes(text)) {
+            this.result.failures.push(text);
+        }
     }
 
     hasRecentPromoAttempt(offerId) {
@@ -804,7 +829,9 @@ class RewardsRunner {
             dashboard.balance ||
             0
         );
-        return { dashboard: dashboard, pc: pc, balance: balance };
+        const info = { dashboard: dashboard, pc: pc, balance: balance };
+        this.lastRewardsInfo = info;
+        return info;
     }
 
     async checkRegion() {
@@ -937,6 +964,7 @@ class RewardsRunner {
         let total = 0;
         let success = false;
         let appUnconfirmed = 0;
+        let appFailure = '';
         try {
             const appBalanceBefore = this.appAccountInfo
                 && this.appAccountInfo.balance;
@@ -975,6 +1003,7 @@ class RewardsRunner {
                 }
             }
         } catch (error) {
+            appFailure = error.message;
             this.log('🟡', 'App 签到失败: ' + error.message);
         }
         await this.delay(3000, 8000);
@@ -996,6 +1025,18 @@ class RewardsRunner {
                 : '完成 +0（今日无新增积分）';
             if (appUnconfirmed > 0) {
                 this.result.sign += '（App 未确认 +' + appUnconfirmed + '）';
+                this.recordFailure(
+                    '签到',
+                    'App 积分未确认 +' + appUnconfirmed
+                );
+            }
+            if (appFailure && this.accessToken) {
+                this.result.sign += '（App 分支失败）';
+                this.recordFailure('签到', 'App 分支失败：' + appFailure);
+            }
+            if (this.oauthBindingError) {
+                this.result.sign += '（App 因 OAuth 账号不匹配跳过）';
+                this.recordFailure('签到', 'OAuth 账号不匹配');
             }
         } else if (appUnconfirmed > 0) {
             this.result.sign = '未确认（App 接口 +' + appUnconfirmed + '）';
@@ -1003,6 +1044,9 @@ class RewardsRunner {
             this.result.sign = '跳过（OAuth 账号不匹配）';
         } else {
             this.result.sign = '失败';
+        }
+        if (!success) {
+            this.recordFailure('签到', this.result.sign);
         }
     }
 
@@ -1057,6 +1101,7 @@ class RewardsRunner {
             this.result.read = this.oauthBindingError
                 ? '跳过（OAuth 账号不匹配）'
                 : '跳过（无 Token）';
+            this.recordFailure('阅读', this.result.read);
             return;
         }
         try {
@@ -1079,6 +1124,9 @@ class RewardsRunner {
             }
             progress = await this.getReadProgress();
             this.result.read = progress ? progress.progress + '/' + progress.max : '已执行，验证失败';
+            if (!progress || (progress.max > 0 && progress.progress < progress.max)) {
+                this.recordFailure('阅读', this.result.read);
+            }
             const appInfoAfter = await this.getAppAccountInfo();
             this.appAccountInfo = appInfoAfter || this.appAccountInfo;
             const confirmed = (
@@ -1103,6 +1151,7 @@ class RewardsRunner {
             }
         } catch (error) {
             this.result.read = '失败';
+            this.recordFailure('阅读', error.message);
             this.log('🔴', '阅读任务失败: ' + error.message);
         }
     }
@@ -1317,17 +1366,41 @@ class RewardsRunner {
         const label = secondPass ? '二次扫描' : '活动卡片';
         try {
             const cards = await this.discoverCards();
-            this.log('🧩', label + '发现 ' + cards.length + ' 个未完成卡片');
+            const eligibleCards = cards.filter(function (card) {
+                return card.kind !== 'quiz' || this.config.tasks.has('quiz');
+            }, this);
+            this.log(
+                '🧩',
+                label + '发现 ' + eligibleCards.length + ' 个可执行未完成卡片'
+            );
             if (this.config.dryRun) {
-                this.result.promos = 'dry-run ' + cards.length + ' 个';
+                this.result.promos = 'dry-run ' + eligibleCards.length + ' 个';
                 return;
             }
             if (secondPass) {
                 if (this.submittedPromoIds.size === 0) {
                     this.result.promos += '，二扫无待确认';
+                    if (this.promoSubmissionFailures > 0) {
+                        this.recordFailure(
+                            '活动',
+                            this.promoSubmissionFailures + ' 个卡片提交失败'
+                        );
+                    }
+                    if (this.promoDeferred > 0) {
+                        this.recordFailure(
+                            '活动',
+                            this.promoDeferred + ' 个卡片超出本轮安全上限'
+                        );
+                    }
+                    if (this.promoCooldownSkipped > 0) {
+                        this.recordFailure(
+                            '活动',
+                            this.promoCooldownSkipped + ' 个卡片仍在冷却'
+                        );
+                    }
                     return;
                 }
-                const pendingIds = new Set(cards.map(function (item) {
+                const pendingIds = new Set(eligibleCards.map(function (item) {
                     return item.offerId;
                 }));
                 const confirmed = Array.from(this.submittedPromoIds).filter(function (offerId) {
@@ -1338,14 +1411,39 @@ class RewardsRunner {
                 if (confirmed < this.submittedPromoIds.size) {
                     this.result.promos += '（仍未完成 '
                         + (this.submittedPromoIds.size - confirmed) + '）';
+                    this.recordFailure(
+                        '活动',
+                        '二次扫描后仍有 '
+                            + (this.submittedPromoIds.size - confirmed)
+                            + ' 个未确认'
+                    );
+                }
+                if (this.promoSubmissionFailures > 0) {
+                    this.recordFailure(
+                        '活动',
+                        this.promoSubmissionFailures + ' 个卡片提交失败'
+                    );
+                }
+                if (this.promoDeferred > 0) {
+                    this.recordFailure(
+                        '活动',
+                        this.promoDeferred + ' 个卡片超出本轮安全上限'
+                    );
+                }
+                if (this.promoCooldownSkipped > 0) {
+                    this.recordFailure(
+                        '活动',
+                        this.promoCooldownSkipped + ' 个卡片仍在冷却'
+                    );
                 }
                 return;
             }
             let ok = 0;
-            const available = cards.filter(function (card) {
+            const available = eligibleCards.filter(function (card) {
                 return !this.hasRecentPromoAttempt(card.offerId);
             }, this);
-            const skipped = cards.length - available.length;
+            const skipped = eligibleCards.length - available.length;
+            this.promoCooldownSkipped = skipped;
             if (skipped > 0) {
                 this.log(
                     '🟡',
@@ -1353,6 +1451,7 @@ class RewardsRunner {
                 );
             }
             const limited = available.slice(0, this.config.maxPromos);
+            this.promoDeferred = Math.max(0, available.length - limited.length);
             const submitted = [];
             for (const card of limited) {
                 this.log('🧩', '[' + card.kind + '] ' + (card.title || card.offerId) + ' +' + card.points);
@@ -1361,6 +1460,8 @@ class RewardsRunner {
                 if (await this.claimCard(card)) {
                     submitted.push(card);
                     this.submittedPromoIds.add(card.offerId);
+                } else {
+                    this.promoSubmissionFailures++;
                 }
             }
             if (submitted.length > 0) {
@@ -1389,10 +1490,14 @@ class RewardsRunner {
                     this.result.promos += '（待同步 ' + (submitted.length - ok) + '）';
                 }
             } else {
-                this.result.promos = ok + '/' + limited.length;
+                this.result.promos = ok + '/' + eligibleCards.length;
                 if (ok < submitted.length) {
                     this.result.promos += '（上报未确认 '
                         + (submitted.length - ok) + '）';
+                }
+                if (this.promoDeferred > 0) {
+                    this.result.promos += '，安全上限延后 '
+                        + this.promoDeferred;
                 }
                 if (skipped > 0) {
                     this.result.promos += '，冷却跳过 ' + skipped;
@@ -1400,6 +1505,7 @@ class RewardsRunner {
             }
         } catch (error) {
             if (!secondPass) this.result.promos = '失败';
+            this.recordFailure('活动', error.message);
             this.log('🔴', label + '失败: ' + error.message);
         }
     }
@@ -1549,45 +1655,137 @@ class RewardsRunner {
         return shuffled(SEARCH_POOL).slice(0, count);
     }
 
+    getSearchRoundCount() {
+        const maximum = Math.max(1, Number(this.config.searchCount || 7));
+        return randomInt(Math.min(4, maximum), Math.min(7, maximum));
+    }
+
+    getSearchControl(info) {
+        const date = taskDateKey(this.config.lockCN);
+        let control = this.state.searchControl;
+        if (!control || control.date !== date) {
+            control = {
+                date: date,
+                lastProgress: null,
+                noProgressRounds: 0,
+                paused: false
+            };
+        }
+        if (
+            control.paused
+            && Number(info.pc.progress) > Number(control.lastProgress)
+        ) {
+            control.noProgressRounds = 0;
+            control.paused = false;
+        }
+        this.state.searchControl = control;
+        return control;
+    }
+
+    saveSearchRound(startInfo, finalInfo) {
+        const control = this.getSearchControl(startInfo);
+        if (finalInfo.pc.progress > startInfo.pc.progress) {
+            control.noProgressRounds = 0;
+            control.paused = false;
+        } else if (
+            finalInfo.pc.max > 0
+            && finalInfo.pc.progress < finalInfo.pc.max
+        ) {
+            control.noProgressRounds++;
+        }
+        if (
+            control.noProgressRounds >= 3
+            && finalInfo.pc.progress < finalInfo.pc.max
+        ) {
+            control.paused = true;
+        }
+        if (
+            finalInfo.pc.max > 0
+            && finalInfo.pc.progress >= finalInfo.pc.max
+        ) {
+            control.noProgressRounds = 0;
+            control.paused = false;
+        }
+        control.lastProgress = finalInfo.pc.progress;
+        this.state.searchControl = control;
+        this.stateStore.save();
+        return control;
+    }
+
     async runSearch() {
         if (!this.config.tasks.has('search')) return;
         try {
-            let info = await this.getRewardsInfo();
+            const startInfo = this.config.tasks.size === 1
+                && this.lastRewardsInfo
+                ? this.lastRewardsInfo
+                : await this.getRewardsInfo();
+            let info = startInfo;
             this.log('🔍', '搜索进度 PC ' + info.pc.progress + '/' + info.pc.max);
             if (this.config.dryRun) {
                 this.result.search = 'dry-run ' + info.pc.progress + '/' + info.pc.max;
                 return;
             }
-            if (info.pc.max > 0 && info.pc.progress >= info.pc.max) {
+            if (info.pc.max <= 0) {
+                this.result.search = '跳过（未解析到搜索配额）';
+                this.recordFailure('搜索', this.result.search);
+                return;
+            }
+            if (info.pc.progress >= info.pc.max) {
                 this.result.search = info.pc.progress + '/' + info.pc.max;
+                return;
+            }
+            const control = this.getSearchControl(info);
+            if (control.paused) {
+                this.result.search = '暂停（连续 '
+                    + control.noProgressRounds + ' 轮服务端进度未变化）';
+                this.recordFailure('搜索', this.result.search);
+                this.log('🔴', '搜索受限或账号异常，今日停止继续搜索');
                 return;
             }
             const searchStartBalance = info.balance;
             let latestResponseBalance = searchStartBalance;
-            const queries = await this.getSearchQueries(this.config.searchCount);
+            const queries = await this.getSearchQueries(
+                this.getSearchRoundCount()
+            );
             let confirmedPoints = 0;
+            let successfulRequests = 0;
+            const requestErrors = [];
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 this.log('🔍', '搜索 ' + (i + 1) + '/' + queries.length + ': ' + query);
-                const activity = await this.searchOnce(query);
-                const evaluation = evaluateBingReward(activity, latestResponseBalance);
-                latestResponseBalance = evaluation.nextBalance;
-                if (evaluation.confirmedIncrement > 0) {
-                    confirmedPoints += evaluation.confirmedIncrement;
-                    this.log(
-                        '🟢',
-                        'Bing 搜索余额确认 +' + evaluation.confirmedIncrement
+                try {
+                    const activity = await this.searchOnce(query);
+                    successfulRequests++;
+                    const evaluation = evaluateBingReward(
+                        activity,
+                        latestResponseBalance
                     );
-                } else if (
-                    evaluation.reportedIncrement !== null
-                    && evaluation.reportedIncrement > 0
-                ) {
-                    this.log(
-                        '🟡',
-                        '接口 RewardsIncrement 返回 +'
-                            + evaluation.reportedIncrement
-                            + '，但余额未变化，暂不确认入账'
-                    );
+                    latestResponseBalance = evaluation.nextBalance;
+                    if (evaluation.confirmedIncrement > 0) {
+                        confirmedPoints += evaluation.confirmedIncrement;
+                        this.log(
+                            '🟢',
+                            'Bing 搜索余额确认 +' + evaluation.confirmedIncrement
+                        );
+                    } else if (
+                        evaluation.reportedIncrement !== null
+                        && evaluation.reportedIncrement > 0
+                    ) {
+                        this.log(
+                            '🟡',
+                            '接口 RewardsIncrement 返回 +'
+                                + evaluation.reportedIncrement
+                                + '，但余额未变化，暂不确认入账'
+                        );
+                    }
+                    if (
+                        info.pc.progress + confirmedPoints >= info.pc.max
+                    ) {
+                        break;
+                    }
+                } catch (error) {
+                    requestErrors.push(error.message);
+                    this.log('🟡', '单次搜索失败，继续本轮: ' + error.message);
                 }
                 if (i + 1 < queries.length) {
                     await this.delay(
@@ -1597,12 +1795,27 @@ class RewardsRunner {
                 }
             }
             info = await this.getRewardsInfo();
+            const finalControl = this.saveSearchRound(startInfo, info);
             this.result.search = info.pc.progress + '/' + info.pc.max;
             const dashboardDelta = Math.max(0, info.balance - searchStartBalance);
             if (dashboardDelta > 0) {
                 this.result.search += '（本轮余额 +' + dashboardDelta + '）';
             } else if (confirmedPoints === 0) {
                 this.result.search += '（本轮未确认入账）';
+            }
+            if (info.pc.progress < info.pc.max) {
+                this.result.search += finalControl.paused
+                    ? '（已触发三轮无进度熔断）'
+                    : '（待后续轮次）';
+            }
+            if (successfulRequests === 0 && requestErrors.length > 0) {
+                this.recordFailure(
+                    '搜索',
+                    '本轮全部请求失败：' + requestErrors[0]
+                );
+            }
+            if (finalControl.paused) {
+                this.recordFailure('搜索', '连续三轮服务端进度未变化');
             }
             if (confirmedPoints > dashboardDelta) {
                 this.log(
@@ -1614,6 +1827,7 @@ class RewardsRunner {
             }
         } catch (error) {
             this.result.search = '失败';
+            this.recordFailure('搜索', error.message);
             this.log('🔴', '搜索任务失败: ' + error.message);
         }
     }
@@ -1621,7 +1835,11 @@ class RewardsRunner {
     async runMobileSearch() {
         if (!this.config.tasks.has('mobile')) return;
         try {
-            let info = await this.getRewardsInfo();
+            const startInfo = this.config.tasks.size === 1
+                && this.lastRewardsInfo
+                ? this.lastRewardsInfo
+                : await this.getRewardsInfo();
+            let info = startInfo;
             this.log(
                 '📱',
                 '移动搜索使用合并配额 PC ' + info.pc.progress + '/' + info.pc.max
@@ -1631,9 +1849,20 @@ class RewardsRunner {
                     + info.pc.max + '（合并配额）';
                 return;
             }
-            if (info.pc.max > 0 && info.pc.progress >= info.pc.max) {
+            if (info.pc.max <= 0) {
+                this.result.mobileSearch = '跳过（未解析到搜索配额）';
+                this.recordFailure('移动搜索', this.result.mobileSearch);
+                return;
+            }
+            if (info.pc.progress >= info.pc.max) {
                 this.result.mobileSearch = info.pc.progress + '/' + info.pc.max
                     + '（合并配额）';
+                return;
+            }
+            const control = this.getSearchControl(info);
+            if (control.paused) {
+                this.result.mobileSearch = '暂停（搜索进度熔断，共用配额）';
+                this.recordFailure('移动搜索', this.result.mobileSearch);
                 return;
             }
             const searchStartBalance = info.balance;
@@ -1642,35 +1871,48 @@ class RewardsRunner {
                 this.config.mobileSearchCount
             );
             let confirmedPoints = 0;
+            let successfulRequests = 0;
+            const requestErrors = [];
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 this.log(
                     '📱',
                     '移动搜索 ' + (i + 1) + '/' + queries.length + ': ' + query
                 );
-                const activity = await this.mobileSearchOnce(query);
-                const evaluation = evaluateBingReward(
-                    activity,
-                    latestResponseBalance
-                );
-                latestResponseBalance = evaluation.nextBalance;
-                if (evaluation.confirmedIncrement > 0) {
-                    confirmedPoints += evaluation.confirmedIncrement;
-                    this.log(
-                        '🟢',
-                        'Bing 移动搜索余额确认 +'
-                            + evaluation.confirmedIncrement
+                try {
+                    const activity = await this.mobileSearchOnce(query);
+                    successfulRequests++;
+                    const evaluation = evaluateBingReward(
+                        activity,
+                        latestResponseBalance
                     );
-                } else if (
-                    evaluation.reportedIncrement !== null
-                    && evaluation.reportedIncrement > 0
-                ) {
-                    this.log(
-                        '🟡',
-                        '移动接口 RewardsIncrement 返回 +'
-                            + evaluation.reportedIncrement
-                            + '，但余额未变化，暂不确认入账'
-                    );
+                    latestResponseBalance = evaluation.nextBalance;
+                    if (evaluation.confirmedIncrement > 0) {
+                        confirmedPoints += evaluation.confirmedIncrement;
+                        this.log(
+                            '🟢',
+                            'Bing 移动搜索余额确认 +'
+                                + evaluation.confirmedIncrement
+                        );
+                    } else if (
+                        evaluation.reportedIncrement !== null
+                        && evaluation.reportedIncrement > 0
+                    ) {
+                        this.log(
+                            '🟡',
+                            '移动接口 RewardsIncrement 返回 +'
+                                + evaluation.reportedIncrement
+                                + '，但余额未变化，暂不确认入账'
+                        );
+                    }
+                    if (
+                        info.pc.progress + confirmedPoints >= info.pc.max
+                    ) {
+                        break;
+                    }
+                } catch (error) {
+                    requestErrors.push(error.message);
+                    this.log('🟡', '单次移动搜索失败，继续本轮: ' + error.message);
                 }
                 if (i + 1 < queries.length) {
                     await this.delay(
@@ -1683,6 +1925,7 @@ class RewardsRunner {
                 }
             }
             info = await this.getRewardsInfo();
+            const finalControl = this.saveSearchRound(startInfo, info);
             this.result.mobileSearch = info.pc.progress + '/' + info.pc.max
                 + '（合并配额';
             const dashboardDelta = Math.max(
@@ -1694,7 +1937,21 @@ class RewardsRunner {
             } else if (confirmedPoints === 0) {
                 this.result.mobileSearch += '，本轮未确认入账';
             }
+            if (info.pc.progress < info.pc.max) {
+                this.result.mobileSearch += finalControl.paused
+                    ? '，已触发三轮无进度熔断'
+                    : '，待后续电脑搜索轮次';
+            }
             this.result.mobileSearch += '）';
+            if (successfulRequests === 0 && requestErrors.length > 0) {
+                this.recordFailure(
+                    '移动搜索',
+                    '本轮全部请求失败：' + requestErrors[0]
+                );
+            }
+            if (finalControl.paused) {
+                this.recordFailure('移动搜索', '连续三轮服务端进度未变化');
+            }
             if (confirmedPoints > dashboardDelta) {
                 this.log(
                     '🟡',
@@ -1705,6 +1962,7 @@ class RewardsRunner {
             }
         } catch (error) {
             this.result.mobileSearch = '失败';
+            this.recordFailure('移动搜索', error.message);
             this.log('🔴', '移动搜索任务失败: ' + error.message);
         }
     }
@@ -1718,9 +1976,13 @@ class RewardsRunner {
             const text = response.text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
             const match = text.match(/每日连续打卡\s*(\d+)/);
             this.result.streak = match ? match[1] + ' 天' : '未解析到';
+            if (!match) {
+                this.recordFailure('连签', '页面未解析到连续签到天数');
+            }
             this.log('📅', '连续签到: ' + this.result.streak);
         } catch (error) {
             this.result.streak = '失败';
+            this.recordFailure('连签', error.message);
             this.log('🟡', '连签查询失败: ' + error.message);
         }
     }
@@ -1795,6 +2057,7 @@ class RewardsRunner {
             );
             if (claimed <= 0 || after.points >= before.points) {
                 this.result.claim = '未确认（仍有 ' + after.points + '）';
+                this.recordFailure('领取', this.result.claim);
                 this.log('🟡', '领取接口已响应，但余额和待领取积分均未变化');
                 return;
             }
@@ -1802,15 +2065,32 @@ class RewardsRunner {
             this.log('🟢', '待领取积分确认 +' + claimed);
         } catch (error) {
             this.result.claim = '失败';
+            this.recordFailure('领取', error.message);
             this.log('🔴', '领取积分失败: ' + error.message);
         }
     }
 
     async run() {
         this.log('🚀', '开始执行');
+        const startDelayMin = Math.max(
+            0,
+            Number(this.config.startDelayMin || 0)
+        );
+        const startDelayMax = Math.max(
+            startDelayMin,
+            Number(this.config.startDelayMax || 0)
+        );
+        if (!this.config.dryRun && startDelayMax > 0) {
+            this.log(
+                '⏳',
+                '启动随机等待 ' + startDelayMin + '–' + startDelayMax + ' 秒'
+            );
+            await this.delay(startDelayMin * 1000, startDelayMax * 1000);
+        }
         try {
             const info = this.preflightRewardsInfo
                 || await this.getRewardsInfo();
+            this.lastRewardsInfo = info;
             this.result.startBalance = info.balance;
             this.log('📊', '初始积分: ' + info.balance);
         } catch (error) {
@@ -1832,35 +2112,55 @@ class RewardsRunner {
                 await this.refreshOAuth();
             }
         }
-        await this.runSign();
-        await this.delay(3000, 8000);
-        await this.runRead();
-        await this.delay(3000, 8000);
-        await this.runPromos(false);
-        await this.delay(3000, 8000);
-        await this.runSearch();
-        if (
-            this.config.tasks.has('search')
-            && this.config.tasks.has('mobile')
-            && !this.config.dryRun
-        ) {
-            await this.delay(
-                Math.max(1000, (this.config.searchInterval - 15) * 1000),
-                (this.config.searchInterval + 15) * 1000
-            );
+        const stages = [
+            { task: 'sign', run: this.runSign.bind(this) },
+            { task: 'read', run: this.runRead.bind(this) },
+            {
+                task: 'promos',
+                run: this.runPromos.bind(this, false)
+            },
+            { task: 'search', run: this.runSearch.bind(this) },
+            {
+                task: 'mobile',
+                run: this.runMobileSearch.bind(this)
+            },
+            { task: 'streak', run: this.runStreak.bind(this) },
+            { task: 'claim', run: this.runClaim.bind(this) }
+        ].filter(function (stage) {
+            return this.config.tasks.has(stage.task);
+        }, this);
+        let previousTask = '';
+        for (const stage of stages) {
+            if (previousTask && !this.config.dryRun) {
+                if (previousTask === 'search' && stage.task === 'mobile') {
+                    await this.delay(
+                        Math.max(
+                            1000,
+                            (this.config.searchInterval - 15) * 1000
+                        ),
+                        (this.config.searchInterval + 15) * 1000
+                    );
+                } else {
+                    await this.delay(3000, 8000);
+                }
+            }
+            await stage.run();
+            previousTask = stage.task;
         }
-        await this.runMobileSearch();
         if (this.config.tasks.has('promos') && !this.config.dryRun) {
             await this.delay(3000, 8000);
             await this.runPromos(true);
         }
-        await this.runStreak();
-        await this.runClaim();
         try {
-            const info = await this.getRewardsInfo();
+            const searchOnly = stages.length === 1
+                && ['search', 'mobile'].includes(stages[0].task);
+            const info = searchOnly && this.lastRewardsInfo
+                ? this.lastRewardsInfo
+                : await this.getRewardsInfo();
             this.result.endBalance = info.balance;
-        } catch (_) {
+        } catch (error) {
             this.result.endBalance = this.result.startBalance;
+            this.recordFailure('收尾校验', error.message);
         }
         this.log('🎉', '执行结束，积分 ' + this.result.startBalance + ' → ' + this.result.endBalance);
         return this.result;
@@ -1909,9 +2209,11 @@ function buildConfig() {
         lockCN: boolEnv('BING_REWARDS_LOCK_CN', true),
         dryRun: boolEnv('BING_REWARDS_DRY_RUN', false),
         notify: boolEnv('BING_REWARDS_NOTIFY', true),
-        delayScale: numberEnv('BING_REWARDS_DELAY_SCALE', 1, 0, 10),
-        searchInterval: numberEnv('BING_REWARDS_SEARCH_INTERVAL', 30, 15, 600),
-        searchCount: numberEnv('BING_REWARDS_SEARCH_COUNT', 6, 1, 30),
+        delayScale: numberEnv('BING_REWARDS_DELAY_SCALE', 1, 1, 10),
+        startDelayMin: numberEnv('BING_REWARDS_START_DELAY_MIN', 5, 5, 300),
+        startDelayMax: numberEnv('BING_REWARDS_START_DELAY_MAX', 95, 5, 600),
+        searchInterval: numberEnv('BING_REWARDS_SEARCH_INTERVAL', 30, 30, 600),
+        searchCount: numberEnv('BING_REWARDS_SEARCH_COUNT', 7, 1, 7),
         mobileSearchCount: numberEnv(
             'BING_REWARDS_MOBILE_SEARCH_COUNT',
             3,
@@ -1939,8 +2241,20 @@ function formatSummary(results) {
             '积分：' + item.startBalance + ' → ' + item.endBalance
         ];
         if (item.error) lines.push('错误：' + item.error);
+        if (Array.isArray(item.failures) && item.failures.length > 0) {
+            lines.push('未完成：' + item.failures.join('；'));
+        }
         return lines.join('\n');
     }).join('\n\n');
+}
+
+function resultsHaveFailures(results) {
+    return results.some(function (item) {
+        return Boolean(
+            item.error
+            || (Array.isArray(item.failures) && item.failures.length > 0)
+        );
+    });
 }
 
 async function sendQingLongNotify(message, enabled) {
@@ -2066,7 +2380,8 @@ async function main() {
     const summary = formatSummary(results);
     console.log('\n' + summary);
     await sendQingLongNotify(summary, config.notify);
-    if (results.every(function (item) { return item.error; })) process.exitCode = 1;
+    if (resultsHaveFailures(results)) process.exitCode = 1;
+    return results;
 }
 
 if (require.main === module) {
@@ -2090,6 +2405,7 @@ module.exports = {
     loadHotSearchWords: loadHotSearchWords,
     parseAccounts: parseAccounts,
     buildConfig: buildConfig,
+    resultsHaveFailures: resultsHaveFailures,
     resolveOAuthBindingConflicts: resolveOAuthBindingConflicts,
     preflightOAuthBindings: preflightOAuthBindings,
     main: main
