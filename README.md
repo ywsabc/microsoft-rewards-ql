@@ -139,6 +139,13 @@ ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards
 更新签到、阅读、活动、电脑搜索、移动搜索、连签和领取任务。若面板全局配置关闭了
 自动添加任务，请在“配置文件”中设置 `AutoAddCron="true"`。
 
+如果 GitHub 仓库拉取超时，不要把公开 `ghproxy` 地址直接填到青龙的“代理”字段。
+该字段需要标准 HTTP/HTTPS 代理；没有代理时可使用
+`https://github.com/ywsabc/microsoft-rewards-ql/raw/refs/heads/main/microsoft_rewards_ql.js`
+建立单文件订阅，再按教程创建 7 个拆分任务。jsDelivr `@main` 存在分支缓存，只作为
+应急来源。完整方案、任务命令和下载自检见
+[GitHub 超时处理](docs/QINGLONG.md#11-github-仓库拉取超时)。
+
 例如手动执行签到和移动搜索：
 
 ```sh

@@ -59,6 +59,30 @@ test('split QingLong entry files expose independent schedules and modules', func
     }
 });
 
+test('QingLong guide documents safe GitHub timeout fallbacks', function () {
+    const guide = fs.readFileSync(
+        path.join(root, 'docs', 'QINGLONG.md'),
+        'utf8'
+    );
+    assert.match(
+        guide,
+        /github\.com\/ywsabc\/microsoft-rewards-ql\/raw\/refs\/heads\/main\/microsoft_rewards_ql\.js/
+    );
+    assert.match(guide, /MSR_GITHUB_PROXY/);
+    assert.match(guide, /标准 HTTP\/HTTPS 代理地址/);
+    assert.match(guide, /容器里的这个地址\s*指向容器自身/);
+    assert.match(guide, /qinglong-mixed/);
+    assert.match(guide, /分支可缓存 12 小时/);
+    assert.match(
+        guide,
+        /公开镜像能够修改下载到的可执行\s*脚本/
+    );
+    assert.doesNotMatch(
+        guide,
+        /共享核心单文件地址：[\s\S]{0,100}raw\.githubusercontent\.com/
+    );
+});
+
 test('upstream v3.0.2 source retains its published checksum', function () {
     const source = fs.readFileSync(
         path.join(root, 'upstream', 'MicrosoftRewardsAuto-3.0.2.user.js')
