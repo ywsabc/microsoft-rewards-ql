@@ -9,10 +9,13 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 
-function createBackgroundHarness() {
+function createBackgroundHarness(options) {
+    const harnessOptions = options || {};
     const session = {};
     const listeners = {};
     const tabUpdates = [];
+    const dapiRequests = [];
+    const tokenRequests = [];
     let nextTabId = 40;
     let currentSuffix = '1';
     const balanceForSuffix = function (suffix) {
@@ -134,7 +137,29 @@ function createBackgroundHarness() {
             )) {
                 const accessToken = String(options.headers.authorization || '')
                     .replace(/^Bearer\s+/, '');
-                const code = accessToken.replace(/^access-/, '');
+                dapiRequests.push({
+                    accessToken: accessToken,
+                    headers: Object.assign({}, options.headers)
+                });
+                const refreshed = accessToken.startsWith('refreshed-access-');
+                if (
+                    harnessOptions.dapiAlwaysUnauthorized
+                    || (
+                        harnessOptions.directAccessUnauthorized
+                        && !refreshed
+                    )
+                ) {
+                    return {
+                        ok: false,
+                        status: 401,
+                        json: async function () {
+                            return { message: 'Unauthorized' };
+                        }
+                    };
+                }
+                const code = refreshed
+                    ? accessToken.replace(/^refreshed-access-/, '')
+                    : accessToken.replace(/^access-/, '');
                 const suffix = code === 'duplicate-account-2'
                     ? '2'
                     : code.replace(/^authorization-code-/, '');
@@ -156,7 +181,27 @@ function createBackgroundHarness() {
                     }
                 };
             }
-            const code = new URLSearchParams(options.body).get('code');
+            const parameters = new URLSearchParams(options.body);
+            tokenRequests.push(Object.fromEntries(parameters.entries()));
+            if (parameters.get('grant_type') === 'refresh_token') {
+                const refreshToken = String(
+                    parameters.get('refresh_token') || ''
+                );
+                const suffix = refreshToken
+                    .replace(/^refresh-authorization-code-/, '')
+                    .replace(/^rotated-refresh-/, '');
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async function () {
+                        return {
+                            access_token: 'refreshed-access-' + suffix,
+                            refresh_token: 'rotated-refresh-' + suffix
+                        };
+                    }
+                };
+            }
+            const code = parameters.get('code');
             return {
                 ok: true,
                 status: 200,
@@ -185,11 +230,13 @@ function createBackgroundHarness() {
         await listeners.tabUpdated(session.oauthTabId, { url: callback.toString() });
     };
     return {
+        dapiRequests: dapiRequests,
         finishOAuth: finishOAuth,
         fingerprint: fingerprintForSuffix,
         send: send,
         session: session,
         tabUpdates: tabUpdates,
+        tokenRequests: tokenRequests,
         useAccount: function (suffix) {
             currentSuffix = String(suffix);
         }
@@ -257,6 +304,70 @@ test('OAuth flow stores a separate refreshToken for every account', async functi
     );
     assert.equal(secondToken.refreshToken, 'refresh-authorization-code-2');
     assert.equal(secondToken.oauthRuid, 'rewards-user-2');
+});
+
+test('OAuth flow refreshes and rechecks an authorization-code access token rejected with 401', async function () {
+    const harness = createBackgroundHarness({
+        directAccessUnauthorized: true
+    });
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(status.status, 'ready');
+    assert.equal(list.accounts[0].refreshToken, 'rotated-refresh-1');
+    assert.equal(list.accounts[0].oauthRuid, 'rewards-user-1');
+    assert.equal(harness.dapiRequests.length, 2);
+    assert.ok(harness.dapiRequests.every(function (request) {
+        return request.headers['x-rewards-ismobile'] === 'true';
+    }));
+    assert.deepEqual(
+        harness.tokenRequests.map(function (request) {
+            return request.grant_type;
+        }),
+        ['authorization_code', 'refresh_token']
+    );
+    assert.equal(
+        harness.tokenRequests[1].scope,
+        'service::prod.rewardsplatform.microsoft.com::MBI_SSL'
+    );
+});
+
+test('OAuth flow never bypasses identity validation when refreshed token also returns 401', async function () {
+    const harness = createBackgroundHarness({
+        dapiAlwaysUnauthorized: true
+    });
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /刷新 Token 后仍无效/);
+    assert.equal(list.accounts[0].refreshToken, '');
+    assert.equal(list.accounts[0].oauthRuid, '');
+    assert.equal(harness.dapiRequests.length, 2);
 });
 
 test('OAuth flow rejects a Microsoft account already bound to another remark', async function () {
