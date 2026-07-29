@@ -59,34 +59,36 @@ test('split QingLong entry files expose independent schedules and modules', func
     }
 });
 
-test('QingLong guide documents a proxyless CDN and safe proxy fallback', function () {
+test('QingLong guide offers direct and timeout full-repository pulls', function () {
     const guide = fs.readFileSync(
         path.join(root, 'docs', 'QINGLONG.md'),
         'utf8'
     );
     assert.match(
         guide,
-        /cdn\.jsdelivr\.net\/gh\/ywsabc\/microsoft-rewards-ql@main\/microsoft_rewards_ql\.js/
+        /ql repo "https:\/\/github\.com\/ywsabc\/microsoft-rewards-ql\.git"/
     );
-    assert.match(guide, /raw_microsoft-rewards-ql@main_microsoft_rewards_ql\.js/);
-    assert.match(guide, /关闭这个单文件订阅的“自动添加任务”和“自动删除任务”/);
-    assert.match(guide, /MSR_GITHUB_PROXY/);
-    assert.match(guide, /标准 HTTP\/HTTPS 代理地址/);
-    assert.match(guide, /不要为拉取源码给全部青龙任务设置全局代理/);
-    assert.match(guide, /分支可缓存 12 小时/);
-    assert.match(guide, /每个账号一条环境/);
-    assert.match(guide, /所有账号都使用同一个名称/);
-    assert.match(guide, /bing_ck/);
-    assert.match(guide, /__bing_account/);
-    assert.match(guide, /不按备注或所在顺序绑定/);
     assert.match(
         guide,
-        /公开镜像能够修改下载到的可执行\s*脚本/
+        /ql repo "https:\/\/ghfast\.top\/https:\/\/github\.com\/ywsabc\/microsoft-rewards-ql\.git"/
     );
-    assert.doesNotMatch(
-        guide,
-        /共享核心单文件地址：[\s\S]{0,100}raw\.githubusercontent\.com/
+    assert.equal((guide.match(/ql repo /g) || []).length, 2);
+    assert.equal(
+        (
+            guide.match(
+                /\^microsoft_rewards_\(ql\|task_\[a-z_\]\+\)\[\.\]js\$/g
+            ) || []
+        ).length,
+        2
     );
+    assert.match(guide, /共享核心和全部 7 个任务入口/);
+    assert.match(guide, /不会[\s\S]{0,20}改变任务运行时的出口 IP/);
+    assert.match(guide, /不会拉取或安装浏览器插件/);
+    assert.match(guide, /github\.com\/ywsabc\/microsoft-rewards-ql\/releases\/latest/);
+    assert.doesNotMatch(guide, /jsdelivr|raw_microsoft|MSR_GITHUB_PROXY/);
+    assert.match(guide, /每个账号在青龙中对应一条同名环境变量/);
+    assert.match(guide, /bing_ck/);
+    assert.match(guide, /不依赖备注或排列顺序/);
 });
 
 test('jsDelivr workflow purges and verifies every published script', function () {

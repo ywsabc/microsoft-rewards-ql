@@ -8,8 +8,8 @@
 
 - `microsoft_rewards_ql.js`：青龙共享运行核心，Node.js 18+，无第三方运行依赖。
 - `microsoft_rewards_task_*.js`：7 个独立青龙定时任务入口。
-- `browser-extension/`：管理多个 Rewards 账号的 Cookie/OAuth Token 并统一同步青龙的
-  Manifest V3 扩展。
+- `browser-extension/`：浏览器插件源码；青龙拉取命令不会安装它，用户应从 Release
+  单独下载发布包。
 - `upstream/MicrosoftRewardsAuto-3.0.2.user.js`：抓取的原始源码，未修改。
 - `LICENSE`：MIT License，保留原作者署名。
 - `AUDIT.md`：质量审查、规格矩阵和已知技术债。
@@ -50,9 +50,11 @@
 
 ## 青龙配置
 
-不想手工从开发者工具复制 Cookie 时，可以使用
-[`browser-extension`](browser-extension/README.md)。扩展复用原脚本 OAuth 客户端获取
-refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址发送请求。
+不想手工从开发者工具复制 Cookie 时，可以单独下载
+[浏览器插件发布包](https://github.com/ywsabc/microsoft-rewards-ql/releases/latest)。
+青龙拉取只安装运行脚本，不包含浏览器插件。扩展复用原脚本 OAuth 客户端获取
+refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址发送请求；详细用法
+见[插件说明](browser-extension/README.md)。
 
 账号配置改为与 `JD_COOKIE` 相同的青龙管理方式：**一个账号添加一条独立环境
 变量，每条都使用同一个名称 `bing_ck`**。两个账号就是两条 `bing_ck`，三个账号
@@ -97,61 +99,30 @@ refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址
 
 布尔变量可以使用 `1/0`、`true/false`、`yes/no` 或 `on/off`。
 
-## 青龙任务
+## 青龙一键拉取
 
-完整步骤见 [青龙安装与运行教程](docs/QINGLONG.md)。脚本无需执行 `npm install`。
-在青龙终端执行：
+脚本无需执行 `npm install`。在青龙终端执行下面两条命令中的一条。
+
+正常拉取：
 
 ```sh
 ql repo "https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_(ql|task_[a-z_]+)[.]js$' "" "" "main" "js" "" "true" "true"
 ```
 
-该命令会拉取共享核心和 7 个入口脚本，并根据每个入口的 `name`、`cron` 自动添加或
-更新签到、阅读、活动、电脑搜索、移动搜索、连签和领取任务。若面板全局配置关闭了
-自动添加任务，请在“配置文件”中设置 `AutoAddCron="true"`。
-
-如果 GitHub 仓库拉取超时，不要把公开 `ghproxy` 地址直接填到青龙的“代理”字段。
-没有代理时，推荐用
-`https://cdn.jsdelivr.net/gh/ywsabc/microsoft-rewards-ql@main/microsoft_rewards_ql.js`
-建立单文件订阅，再按教程创建 7 个拆分任务。本仓库会在 `main` 脚本更新后自动调用
-jsDelivr Purge API，并验证 CDN 文件与新提交逐字节一致。完整方案、任务命令和下载
-自检见[GitHub 超时处理](docs/QINGLONG.md#11-github-超时无代理单文件方案)。
-
-例如手动执行签到和移动搜索：
+GitHub 拉取超时时使用备用完整仓库：
 
 ```sh
-task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_sign.js
-task ywsabc_microsoft-rewards-ql_main/microsoft_rewards_task_mobile.js
+ql repo "https://ghfast.top/https://github.com/ywsabc/microsoft-rewards-ql.git" '^microsoft_rewards_(ql|task_[a-z_]+)[.]js$' "" "" "main" "js" "" "true" "true"
 ```
 
-建议先临时设置：
+两条命令不要重复执行。任意一条成功后都会拉取青龙运行所需的共享核心和 7 个任务
+入口，并自动创建或更新签到、阅读、活动、电脑搜索、移动搜索、连签和领取任务。
+备用地址只负责源码下载，不会改变 Rewards 运行时的出口 IP。
 
-```text
-BING_REWARDS_DRY_RUN=1
-```
-
-确认日志能读取积分、搜索配额和连签状态后，再改回 `0`。普通任务默认在
-09:07 至 12:07 之间错峰执行；电脑搜索在白天分 5 轮执行，具体时间见教程。
-
-本地/青龙 Node.js 验证：
-
-```sh
-cd MicrosoftRewardsQL
-npm test
-```
-
-不带账号 Cookie、不会提交 Rewards 活动的真实在线只读检查：
-
-```sh
-npm run test:online
-```
-
-已经配置账号环境变量后，可执行真实账号只读验收；命令会强制 `dry-run`，不会刷新
-OAuth、写令牌或提交任务：
-
-```sh
-npm run test:account
-```
+**浏览器插件不会被青龙拉取。** 请用户自行从
+[GitHub Releases](https://github.com/ywsabc/microsoft-rewards-ql/releases/latest)
+下载 `microsoft-rewards-ql-extension-*.zip`，解压后加载到 Chrome 或 Edge。简短配置
+步骤见[青龙安装与运行教程](docs/QINGLONG.md)。
 
 ## 安全与风险
 
