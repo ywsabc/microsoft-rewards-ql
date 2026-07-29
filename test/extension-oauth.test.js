@@ -15,6 +15,7 @@ function createBackgroundHarness(options) {
     const listeners = {};
     const tabUpdates = [];
     const dapiRequests = [];
+    const scriptingCalls = [];
     const tokenRequests = [];
     let nextTabId = 40;
     let currentSuffix = '1';
@@ -56,6 +57,14 @@ function createBackgroundHarness(options) {
             onRemoved: { addListener: function (listener) { listeners.windowRemoved = listener; } }
         },
         tabs: {
+            query: async function () {
+                if (harnessOptions.noRewardsTab) return [];
+                return [{
+                    id: 21,
+                    status: 'complete',
+                    url: 'https://rewards.bing.com/'
+                }];
+            },
             create: async function (options) {
                 nextTabId++;
                 tabUpdates.push({ id: nextTabId, options: options });
@@ -67,6 +76,12 @@ function createBackgroundHarness(options) {
             },
             remove: async function () {},
             onUpdated: { addListener: function (listener) { listeners.tabUpdated = listener; } }
+        },
+        scripting: {
+            executeScript: async function (injection) {
+                scriptingCalls.push(injection);
+                return [{ result: await injection.func() }];
+            }
         },
         storage: {
             session: {
@@ -114,9 +129,49 @@ function createBackgroundHarness(options) {
         crypto: crypto.webcrypto,
         TextEncoder: TextEncoder,
         fetch: async function (url, options) {
+            if (String(url).startsWith('/api/getuserinfo')) {
+                return {
+                    ok: !harnessOptions.pageCookieUnauthorized,
+                    status: harnessOptions.pageCookieUnauthorized
+                        ? 401
+                        : 200,
+                    json: async function () {
+                        if (harnessOptions.pageCookieUnauthorized) return {};
+                        return {
+                            dashboard: {
+                                userStatus: {
+                                    availablePoints:
+                                        balanceForSuffix(currentSuffix)
+                                }
+                            }
+                        };
+                    }
+                };
+            }
+            if (String(url).startsWith('/earn')) {
+                return {
+                    ok: !harnessOptions.pageEarnUnauthorized,
+                    status: harnessOptions.pageEarnUnauthorized
+                        ? 401
+                        : 200,
+                    text: async function () {
+                        if (harnessOptions.pageEarnUnauthorized) return '';
+                        return '<script>"balance":'
+                            + balanceForSuffix(currentSuffix)
+                            + '</script>';
+                    }
+                };
+            }
             if (String(url).startsWith(
                 'https://rewards.bing.com/api/getuserinfo'
             )) {
+                if (harnessOptions.cookieFetchUnauthorized) {
+                    return {
+                        ok: false,
+                        status: 401,
+                        json: async function () { return {}; }
+                    };
+                }
                 return {
                     ok: true,
                     status: 200,
@@ -235,6 +290,7 @@ function createBackgroundHarness(options) {
         fingerprint: fingerprintForSuffix,
         send: send,
         session: session,
+        scriptingCalls: scriptingCalls,
         tabUpdates: tabUpdates,
         tokenRequests: tokenRequests,
         useAccount: function (suffix) {
@@ -304,6 +360,57 @@ test('OAuth flow stores a separate refreshToken for every account', async functi
     );
     assert.equal(secondToken.refreshToken, 'refresh-authorization-code-2');
     assert.equal(secondToken.oauthRuid, 'rewards-user-2');
+});
+
+test('Cookie identity 401 falls back to a same-origin Rewards page check', async function () {
+    const harness = createBackgroundHarness({
+        cookieFetchUnauthorized: true,
+        pageCookieUnauthorized: true
+    });
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(status.status, 'ready');
+    assert.equal(list.accounts[0].oauthRuid, 'rewards-user-1');
+    assert.equal(harness.scriptingCalls.length, 2);
+    assert.ok(harness.scriptingCalls.every(function (injection) {
+        return injection.world === 'MAIN'
+            && injection.target.tabId === 21
+            && typeof injection.func === 'function';
+    }));
+});
+
+test('Cookie identity is rejected when the same-origin Rewards earn page also returns 401', async function () {
+    const harness = createBackgroundHarness({
+        cookieFetchUnauthorized: true,
+        pageCookieUnauthorized: true,
+        pageEarnUnauthorized: true
+    });
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await assert.rejects(
+        harness.send({
+            type: 'oauth:start',
+            accountId: first.account.id,
+            cookieFingerprint: first.account.cookieFingerprint
+        }),
+        /Rewards 页面会话也未通过/
+    );
+    assert.equal(harness.scriptingCalls.length, 1);
+    assert.equal(harness.tabUpdates.length, 0);
 });
 
 test('OAuth flow refreshes and rechecks an authorization-code access token rejected with 401', async function () {

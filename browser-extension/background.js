@@ -134,6 +134,98 @@ async function fingerprintCookies(rewardsCookie, bingCookie) {
     }).join('');
 }
 
+async function inspectRewardsBalanceInPage() {
+    const tabs = await chrome.tabs.query({
+        url: ['https://rewards.bing.com/*']
+    });
+    const tab = tabs.find(function (item) {
+        return item.id && item.status === 'complete';
+    }) || tabs.find(function (item) { return item.id; });
+    if (!tab || !tab.id) {
+        throw new Error(
+            'Rewards Cookie 后台校验被拒绝，请先打开并登录 '
+            + 'https://rewards.bing.com/ 后重试'
+        );
+    }
+    const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        func: async function () {
+            const userInfoResponse = await fetch(
+                '/api/getuserinfo?type=1'
+                    + '&X-Requested-With=XMLHttpRequest&_=' + Date.now(),
+                {
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: {
+                        accept: 'application/json',
+                        'x-requested-with': 'XMLHttpRequest'
+                    }
+                }
+            );
+            const data = await userInfoResponse.json().catch(function () {
+                return {};
+            });
+            const dashboard = data.dashboard || data;
+            const userStatus = dashboard.userStatus || {};
+            const rawBalance = userStatus.availablePoints
+                ?? dashboard.availablePoints
+                ?? dashboard.balance;
+            let balance = Number(rawBalance);
+            if (userInfoResponse.ok && Number.isFinite(balance)) {
+                return {
+                    status: userInfoResponse.status,
+                    balance: balance
+                };
+            }
+            const earnResponse = await fetch(
+                '/earn?_=' + Date.now(),
+                {
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: { accept: 'text/html' }
+                }
+            );
+            const html = await earnResponse.text().catch(function () {
+                return '';
+            });
+            const clean = String(html).replace(/\\"/g, '"');
+            const match = clean.match(/"balance":(\d+)/)
+                || clean.match(/"availablePoints":(\d+)/)
+                || clean.match(/"totalPoints":(\d+)/);
+            balance = match ? Number(match[1]) : NaN;
+            return {
+                status: earnResponse.status,
+                balance: Number.isFinite(balance) ? balance : null
+            };
+        }
+    });
+    const pageResult = results && results[0] && results[0].result;
+    if (!pageResult || Number(pageResult.status) < 200
+        || Number(pageResult.status) >= 300) {
+        const status = Number(pageResult && pageResult.status) || 0;
+        if (status === 401) {
+            throw new Error(
+                'Rewards Cookie 身份校验 HTTP 401'
+                + '（Rewards 页面会话也未通过，请重新登录后重试）'
+            );
+        }
+        throw new Error(
+            'Rewards 页面身份校验失败'
+                + (status ? '，HTTP ' + status : '')
+        );
+    }
+    const balance = Number(pageResult.balance);
+    if (
+        pageResult.balance === null
+        || pageResult.balance === undefined
+        || !Number.isFinite(balance)
+    ) {
+        throw new Error('Rewards 页面身份校验缺少余额');
+    }
+    return balance;
+}
+
 async function inspectBrowserRewardsSession() {
     const lists = await Promise.all([
         getCookies({ url: 'https://rewards.bing.com/' }),
@@ -159,17 +251,24 @@ async function inspectBrowserRewardsSession() {
         }
     });
     const data = await response.json().catch(function () { return {}; });
+    let balance;
     if (!response.ok) {
-        throw new Error('Rewards Cookie 身份校验 HTTP ' + response.status);
-    }
-    const dashboard = data.dashboard || data;
-    const userStatus = dashboard.userStatus || {};
-    const rawBalance = userStatus.availablePoints
-        ?? dashboard.availablePoints
-        ?? dashboard.balance;
-    const balance = Number(rawBalance);
-    if (!Number.isFinite(balance)) {
-        throw new Error('Rewards Cookie 身份校验缺少余额');
+        if (response.status !== 401) {
+            throw new Error(
+                'Rewards Cookie 身份校验 HTTP ' + response.status
+            );
+        }
+        balance = await inspectRewardsBalanceInPage();
+    } else {
+        const dashboard = data.dashboard || data;
+        const userStatus = dashboard.userStatus || {};
+        const rawBalance = userStatus.availablePoints
+            ?? dashboard.availablePoints
+            ?? dashboard.balance;
+        balance = Number(rawBalance);
+        if (!Number.isFinite(balance)) {
+            throw new Error('Rewards Cookie 身份校验缺少余额');
+        }
     }
     return {
         cookieFingerprint: await fingerprintCookies(
