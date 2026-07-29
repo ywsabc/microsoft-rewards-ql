@@ -292,7 +292,7 @@ test('OAuth flow rejects a Microsoft account already bound to another remark', a
     assert.equal(list.accounts[1].oauthRuid, '');
 });
 
-test('account remark is unique and updating it rebinds the existing record', async function () {
+test('account remark is display-only while Cookie identity controls updates', async function () {
     const harness = createBackgroundHarness();
     const first = await capture(harness, '主账号', 1);
     const second = await capture(harness, '备用账号', 2);
@@ -305,35 +305,39 @@ test('account remark is unique and updating it rebinds the existing record', asy
     });
     await harness.finishOAuth('authorization-code-1');
 
-    await assert.rejects(
-        capture(harness, '主账号', 3),
-        /已绑定其他浏览器会话/
-    );
-    const rebound = await capture(harness, '主账号', 3, {
+    const sameCookie = await capture(harness, '新备注', 1);
+    assert.equal(sameCookie.account.id, first.account.id);
+    assert.match(sameCookie.account.refreshToken, /^refresh-/);
+
+    const renamed = await harness.send({
+        type: 'accounts:rename',
+        accountId: second.account.id,
+        name: '新备注'
+    });
+    assert.equal(renamed.account.name, '新备注');
+
+    const third = await capture(harness, '新备注', 3);
+    assert.notEqual(third.account.id, first.account.id);
+    assert.notEqual(third.account.id, second.account.id);
+
+    const rebound = await capture(harness, '新备注', 4, {
         mode: 'replace',
         accountId: first.account.id
     });
     assert.equal(rebound.account.id, first.account.id);
     assert.equal(
         rebound.account.cookieFingerprint,
-        harness.fingerprint(3)
+        harness.fingerprint(4)
     );
     assert.equal(rebound.account.refreshToken, '');
     assert.equal(rebound.account.oauthRuid, '');
 
-    await assert.rejects(
-        harness.send({
-            type: 'accounts:rename',
-            accountId: second.account.id,
-            name: '主账号'
-        }),
-        /账号备注已存在/
-    );
-
     await harness.send({ type: 'accounts:remove', accountId: first.account.id });
     const list = await harness.send({ type: 'accounts:list' });
-    assert.equal(list.accounts.length, 1);
-    assert.equal(list.accounts[0].name, '备用账号');
+    assert.equal(list.accounts.length, 2);
+    assert.ok(list.accounts.every(function (account) {
+        return account.name === '新备注';
+    }));
 });
 
 test('OAuth callback rejects a browser account switch during authorization', async function () {

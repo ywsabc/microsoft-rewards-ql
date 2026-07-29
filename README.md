@@ -54,56 +54,27 @@
 [`browser-extension`](browser-extension/README.md)。扩展复用原脚本 OAuth 客户端获取
 refreshToken，并且只向 Microsoft 登录服务和用户填写的青龙地址发送请求。
 
-在青龙环境变量中添加 `BING_REWARDS_ACCOUNTS`，值为 JSON 数组：
+账号配置改为与 `JD_COOKIE` 相同的青龙管理方式：**一个账号添加一条独立环境
+变量，每条都使用同一个名称 `bing_ck`**。两个账号就是两条 `bing_ck`，三个账号
+就是三条；没有 `bing_ck_1`、`bing_ck_2`，执行身份也不依赖排列顺序。
 
-```json
-[
-  {
-    "name": "账号1",
-    "cookie": ".MSA.Auth=...; _U=...; ...",
-    "searchCookie": "_U=...; MUID=...; ...",
-    "cookieFingerprint": "由扩展自动同步",
-    "refreshToken": "M.R3_BAY....",
-    "oauthRuid": "由扩展自动同步"
-  },
-  {
-    "name": "账号2",
-    "cookie": ".MSA.Auth=...; _U=...; ...",
-    "searchCookie": "_U=...; MUID=...; ...",
-    "cookieFingerprint": "由扩展自动同步",
-    "refreshToken": "M.R3_BAY....",
-    "oauthRuid": "由扩展自动同步"
-  }
-]
-```
-
-- `name`：账号备注。
-- `cookie`：必填。在已登录 `https://rewards.bing.com/` 的浏览器请求头中取得完整
-  `Cookie` 值；认证字段可能是 `.MSA.Auth` 或新版 `_C_Auth`。
-- `searchCookie`：可选但推荐。在已登录 `https://www.bing.com/` 的浏览器请求头中
-  取得。未配置时沿用 `cookie`；浏览器扩展会分别读取并自动填写两个站点的 Cookie。
-- `cookieFingerprint`：扩展根据两个站点的登录字段生成；核心会重新计算并拒绝指纹
-  不一致、Cookie 重复或两个站点 `_U` 不一致的账号。
-- `refreshToken`：推荐配置，用于 App 签到和阅读。
-- `oauthRuid`：浏览器扩展自动写入的匿名账号标识，用于阻止多账号 Token 串号。
-  旧配置缺少此字段时，核心只允许在 Cookie 与 App 余额完全一致后建立本机绑定，
-  仍建议尽快用扩展重新同步。
-- `authCode`：可选的一次性授权码或完整 OAuth 回调 URL。兑换成功后，新的
-  `refreshToken` 会保存到 `.state`，之后不再需要配置 `authCode`。
-
-单账号也可以分别使用：
+单条 `bing_ck` 内的 Cookie 字段使用 `&` 分隔。手工添加单账号的最简形式例如：
 
 ```text
-BING_REWARDS_NAME
-BING_REWARDS_COOKIE
-BING_REWARDS_SEARCH_COOKIE
-BING_REWARDS_REFRESH_TOKEN
-BING_REWARDS_AUTH_CODE
-BING_REWARDS_OAUTH_RUID
-BING_REWARDS_COOKIE_FINGERPRINT
+名称：bing_ck
+值：_U=...&.MSA.Auth=...&MUID=...
 ```
 
-不要同时使用单账号变量和 `BING_REWARDS_ACCOUNTS`；存在多账号变量时，以它为准。
+认证字段也可能是 `_C_Auth`。推荐直接使用
+[`browser-extension`](browser-extension/README.md) 同步：扩展会给每条值加入
+`__bing_account` 边界以及搜索 Cookie、refreshToken、`oauthRuid` 和 Cookie 指纹。
+这些字段仍位于该账号自己的 `bing_ck` 中，不会再创建辅助或编号变量。边界字段是
+必要的，因为青龙会在任务启动时自动用 `&` 聚合多条同名环境变量；核心据此还原每个
+账号，并继续拒绝 Cookie 重复、OAuth 身份重复、指纹不符和两个站点 `_U` 不一致。
+
+旧版 `BING_REWARDS_ACCOUNTS` 和单账号变量暂时保留为只读迁移兼容；只要存在
+`bing_ck`，核心就优先使用新配置。扩展首次成功同步后会清理它创建的旧数组和编号
+变量，不删除用户手工维护的其他名称。
 
 ## 可选环境变量
 

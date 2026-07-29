@@ -155,34 +155,39 @@ https://github.com/ywsabc/microsoft-rewards-ql/raw/refs/heads/main/microsoft_rew
 
 ## 3. 配置账号
 
-推荐安装仓库 Release 中的浏览器扩展，通过账号备注把 Cookie、搜索 Cookie 和
-OAuth refreshToken 同步到青龙。同步完成后，环境变量中应存在：
+推荐安装仓库 Release 中的浏览器扩展，把 Cookie、搜索 Cookie 和 OAuth
+refreshToken 同步到青龙。配置方式与京东 `JD_COOKIE` 一致：每个账号一条环境
+变量，所有账号都使用同一个名称：
 
 ```text
-BING_REWARDS_ACCOUNTS
+bing_ck
 ```
 
-其值为 JSON 数组，每个账号至少包含：
+例如两个账号在青龙环境变量页面显示为两条独立记录：
 
-```json
-[
-  {
-    "name": "账号1",
-    "cookie": ".MSA.Auth=...; _U=...; ...",
-    "searchCookie": "_U=...; MUID=...; ...",
-    "cookieFingerprint": "由扩展自动同步",
-    "refreshToken": "M.R3_BAY...",
-    "oauthRuid": "由扩展自动同步"
-  }
-]
+```text
+bing_ck    第一个账号的值
+bing_ck    第二个账号的值
 ```
+
+单条值内的 Cookie 字段使用 `&`，而不是 HTTP Cookie Header 原来的分号。手工
+添加单账号的最简示例：
+
+```text
+_U=...&.MSA.Auth=...&MUID=...
+```
+
+扩展 `3.1.0` 会在每条值开头加入 `__bing_account` 边界，并在同一条 `bing_ck`
+中保存该账号的搜索 Cookie、refreshToken、匿名 `oauthRuid` 和 Cookie 指纹。不要
+删除这些扩展字段：青龙会把同名变量用 `&` 聚合后交给任务，核心依靠边界字段无歧义
+地拆回多个账号。账号按 Cookie 指纹和 `oauthRuid` 绑定，不按备注或所在顺序绑定。
 
 Cookie 和 refreshToken 等同账号密码，不要写入脚本、GitHub Issue 或公开日志。
-多账号必须逐个切换 Microsoft 账号并授权。扩展 `3.0.2` 会同步 Cookie 指纹与匿名
-`oauthRuid`；授权开始和回调时都会重新读取当前浏览器会话，并要求 Cookie 与 DAPI
-余额完全一致。核心还会拒绝重复备注、重复 Cookie、重复 `oauthRuid` 和两个站点
-`_U` 不一致的配置。旧配置暂时缺少 `oauthRuid` 时，仅可通过 Cookie/App 余额完全
-一致建立本机绑定；升级后仍应重新用扩展同步一次。
+多账号必须逐个切换 Microsoft 账号并授权。授权开始和回调时都会重新读取当前浏览器
+会话，并要求 Cookie 与 DAPI 余额完全一致。核心会拒绝重复 Cookie、重复
+`oauthRuid`、伪造指纹和两个站点 `_U` 不一致的配置。首次同步会把扩展创建的旧
+`BING_REWARDS_ACCOUNTS`、`bing_ck_1`、`bing_search_ck_1`、`bing_token_1`
+等变量迁移并清理。
 
 ## 4. 首次安全测试
 

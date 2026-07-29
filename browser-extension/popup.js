@@ -36,6 +36,10 @@ let selectedAccountId = '';
 let oauthPoll = null;
 let saveTimer = null;
 
+if (!globalThis.BingCkCodec) {
+    throw new Error('bing_ck 编解码模块未加载');
+}
+
 function setMessage(element, text, ok) {
     element.className = 'message ' + (ok ? 'ok' : 'error');
     element.textContent = text;
@@ -174,8 +178,8 @@ function selectedAccount() {
     }) || null;
 }
 
-function accountLabel(account, index) {
-    return (index + 1) + '. ' + account.name + (
+function accountLabel(account) {
+    return account.name + ' · ' + account.cookieFingerprint.slice(0, 6) + (
         account.refreshToken ? ' · Token 已获取' : ' · 待授权'
     );
 }
@@ -202,10 +206,10 @@ function updateControls() {
 function renderAccounts() {
     const previous = selectedAccountId;
     elements['account-select'].textContent = '';
-    accounts.forEach(function (account, index) {
+    accounts.forEach(function (account) {
         const option = document.createElement('option');
         option.value = account.id;
-        option.textContent = accountLabel(account, index);
+        option.textContent = accountLabel(account);
         elements['account-select'].appendChild(option);
     });
     if (accounts.some(function (item) { return item.id === previous; })) {
@@ -231,9 +235,6 @@ function renderAccounts() {
             matches
         );
     } else {
-        if (!elements['account-name'].value.trim()) {
-            elements['account-name'].value = '账号1';
-        }
         setNeutralMessage(elements['account-status'], '尚未保存账号。');
     }
     updateControls();
@@ -338,7 +339,8 @@ async function captureCurrentAccount(mode) {
         type: 'accounts:capture',
         mode: mode,
         accountId: mode === 'replace' ? selectedAccountId : '',
-        name: elements['account-name'].value.trim() || ('账号' + (accounts.length + 1)),
+        name: elements['account-name'].value.trim()
+            || ('Bing-' + currentCookieFingerprint.slice(0, 8)),
         cookie: cachedRewardsCookieHeader,
         searchCookie: cachedBingCookieHeader,
         cookieFingerprint: currentCookieFingerprint
@@ -464,95 +466,254 @@ async function qlRequest(origin, path, token, options) {
     return data.data;
 }
 
-async function upsertEnv(origin, apiToken, name, value, remarks) {
+async function getExactEnvs(origin, apiToken, name) {
     const matches = await qlRequest(
         origin,
         '/open/envs?searchValue=' + encodeURIComponent(name),
         apiToken
     );
-    const current = (Array.isArray(matches) ? matches : []).find(function (item) {
+    return (Array.isArray(matches) ? matches : []).filter(function (item) {
         return item.name === name;
     });
-    const currentId = current && (current.id || current._id);
-    const body = current
-        ? { id: currentId, name: name, value: value, remarks: remarks }
-        : [{ name: name, value: value, remarks: remarks }];
+}
+
+async function createEnvs(origin, apiToken, envs) {
+    if (!envs.length) return;
     await qlRequest(origin, '/open/envs', apiToken, {
-        method: current ? 'PUT' : 'POST',
+        method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(envs)
     });
 }
 
-async function getQingLongAccounts(origin, apiToken) {
-    const matches = await qlRequest(
-        origin,
-        '/open/envs?searchValue=' + encodeURIComponent('BING_REWARDS_ACCOUNTS'),
-        apiToken
-    );
-    const current = (Array.isArray(matches) ? matches : []).find(function (item) {
-        return item.name === 'BING_REWARDS_ACCOUNTS';
-    });
-    if (!current || !String(current.value || '').trim()) return [];
-    let parsed;
-    try {
-        parsed = JSON.parse(current.value);
-    } catch (_) {
-        throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是有效 JSON');
-    }
-    if (!Array.isArray(parsed)) {
-        throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是数组');
-    }
-    return parsed.filter(function (item) {
-        return item && typeof item === 'object' && item.name && item.cookie;
-    }).map(function (item) {
-        return {
-            name: String(item.name),
-            cookie: String(item.cookie),
-            searchCookie: String(item.searchCookie || item.cookie),
-            cookieFingerprint: String(
-                item.cookieFingerprint || item.cookie_fingerprint || ''
-            ),
-            refreshToken: String(item.refreshToken || item.refresh_token || ''),
-            oauthRuid: String(item.oauthRuid || item.oauth_ruid || '')
-        };
+async function updateEnv(origin, apiToken, env, name, value, remarks) {
+    const id = env && (env.id || env._id);
+    if (!id) throw new Error('青龙环境变量缺少 ID');
+    await qlRequest(origin, '/open/envs', apiToken, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            id: id,
+            name: name,
+            value: value,
+            remarks: remarks
+        })
     });
 }
 
-function mergeAccountByRemark(existing, incoming) {
-    const result = existing.slice();
-    const key = incoming.name.trim().toLocaleLowerCase();
-    const index = result.findIndex(function (item) {
-        return item.name.trim().toLocaleLowerCase() === key;
-    });
-    if (index >= 0) result[index] = incoming;
-    else result.push(incoming);
-    return result;
-}
-
-async function deleteStaleIndexedEnvs(origin, apiToken, accountCount) {
-    const matches = await qlRequest(
-        origin,
-        '/open/envs?searchValue=' + encodeURIComponent('bing_'),
-        apiToken
-    );
-    const staleIds = (Array.isArray(matches) ? matches : []).filter(function (item) {
-        const match = String(item.name || '').match(
-            /^bing_(?:ck|search_ck|token)_(\d+)$/
-        );
-        return match
-            && Number(match[1]) > accountCount
-            && String(item.remarks || '').startsWith('由浏览器扩展同步');
-    }).map(function (item) {
-        return item.id || item._id;
-    }).filter(Boolean);
-    if (!staleIds.length) return 0;
+async function deleteEnvIds(origin, apiToken, ids) {
+    const validIds = ids.filter(Boolean);
+    if (!validIds.length) return 0;
     await qlRequest(origin, '/open/envs', apiToken, {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(staleIds)
+        body: JSON.stringify(validIds)
     });
-    return staleIds.length;
+    return validIds.length;
+}
+
+function normalizeLegacyAccount(item) {
+    if (!item || typeof item !== 'object' || !item.cookie) return null;
+    return {
+        name: String(item.name || ''),
+        cookie: String(item.cookie),
+        searchCookie: String(item.searchCookie || item.cookie),
+        cookieFingerprint: String(
+            item.cookieFingerprint || item.cookie_fingerprint || ''
+        ),
+        refreshToken: String(item.refreshToken || item.refresh_token || ''),
+        oauthRuid: String(item.oauthRuid || item.oauth_ruid || '')
+    };
+}
+
+async function completeAccountIdentity(account) {
+    const computed = await fingerprintCookies(
+        account.cookie,
+        account.searchCookie || account.cookie
+    );
+    if (
+        account.cookieFingerprint
+        && account.cookieFingerprint !== computed
+    ) {
+        throw new Error(
+            '青龙账号“' + (account.name || computed.slice(0, 8))
+                + '”的 Cookie 指纹校验失败'
+        );
+    }
+    account.cookieFingerprint = computed;
+    if (!account.name) account.name = 'Bing-' + computed.slice(0, 8);
+    return account;
+}
+
+function sameAccountIdentity(left, right) {
+    if (
+        left.oauthRuid
+        && right.oauthRuid
+        && left.oauthRuid === right.oauthRuid
+    ) {
+        return true;
+    }
+    return Boolean(
+        left.cookieFingerprint
+        && right.cookieFingerprint
+        && left.cookieFingerprint === right.cookieFingerprint
+    );
+}
+
+function assertDistinctAccountIdentities(list) {
+    for (let left = 0; left < list.length; left++) {
+        for (let right = left + 1; right < list.length; right++) {
+            if (sameAccountIdentity(list[left], list[right])) {
+                throw new Error(
+                    '账号“' + list[left].name + '”与“'
+                        + list[right].name + '”身份重复'
+                );
+            }
+        }
+    }
+}
+
+async function getQingLongAccountState(origin, apiToken) {
+    const bingEnvs = await getExactEnvs(origin, apiToken, 'bing_ck');
+    const records = [];
+    for (const env of bingEnvs) {
+        const decoded = globalThis.BingCkCodec.decodeAccounts(env.value);
+        if (decoded.length !== 1) {
+            throw new Error('青龙每条 bing_ck 必须只对应一个账号');
+        }
+        records.push({
+            env: env,
+            account: await completeAccountIdentity(decoded[0])
+        });
+    }
+
+    const legacyEnvs = await getExactEnvs(
+        origin,
+        apiToken,
+        'BING_REWARDS_ACCOUNTS'
+    );
+    for (const env of legacyEnvs) {
+        if (!String(env.value || '').trim()) continue;
+        let parsed;
+        try {
+            parsed = JSON.parse(env.value);
+        } catch (_) {
+            throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是有效 JSON');
+        }
+        if (!Array.isArray(parsed)) {
+            throw new Error('青龙现有 BING_REWARDS_ACCOUNTS 不是数组');
+        }
+        for (const item of parsed) {
+            const normalized = normalizeLegacyAccount(item);
+            if (!normalized) continue;
+            const account = await completeAccountIdentity(normalized);
+            if (!records.some(function (record) {
+                return sameAccountIdentity(record.account, account);
+            })) {
+                records.push({ env: null, account: account });
+            }
+        }
+    }
+    assertDistinctAccountIdentities(records.map(function (record) {
+        return record.account;
+    }));
+    return {
+        records: records,
+        bingEnvs: bingEnvs,
+        legacyEnvs: legacyEnvs
+    };
+}
+
+async function reconcileBingCkEnvs(
+    origin,
+    apiToken,
+    desiredAccounts,
+    existingEnvs,
+    removeAllStale
+) {
+    assertDistinctAccountIdentities(desiredAccounts);
+    const existing = [];
+    for (const env of existingEnvs) {
+        const decoded = globalThis.BingCkCodec.decodeAccounts(env.value);
+        if (decoded.length !== 1) {
+            throw new Error('青龙每条 bing_ck 必须只对应一个账号');
+        }
+        existing.push({
+            env: env,
+            account: await completeAccountIdentity(decoded[0]),
+            used: false
+        });
+    }
+    const creations = [];
+    for (const account of desiredAccounts) {
+        const matches = existing.filter(function (record) {
+            return sameAccountIdentity(record.account, account);
+        });
+        if (matches.length > 1) {
+            throw new Error('青龙存在重复 bing_ck 身份，已拒绝覆盖');
+        }
+        const value = globalThis.BingCkCodec.encodeAccount(account);
+        const remarks = '由浏览器扩展同步｜' + account.name;
+        if (matches.length) {
+            matches[0].used = true;
+            await updateEnv(
+                origin,
+                apiToken,
+                matches[0].env,
+                'bing_ck',
+                value,
+                remarks
+            );
+        } else {
+            creations.push({
+                name: 'bing_ck',
+                value: value,
+                remarks: remarks
+            });
+        }
+    }
+    await createEnvs(origin, apiToken, creations);
+    const staleIds = existing.filter(function (record) {
+        return !record.used && (
+            removeAllStale
+            || String(record.env.remarks || '').startsWith('由浏览器扩展同步')
+        );
+    }).map(function (record) {
+        return record.env.id || record.env._id;
+    });
+    return deleteEnvIds(origin, apiToken, staleIds);
+}
+
+async function deleteLegacyExtensionEnvs(origin, apiToken) {
+    const searches = await Promise.all([
+        getExactEnvs(origin, apiToken, 'BING_REWARDS_ACCOUNTS'),
+        qlRequest(
+            origin,
+            '/open/envs?searchValue=' + encodeURIComponent('bing_'),
+            apiToken
+        )
+    ]);
+    const candidates = searches[0].concat(
+        Array.isArray(searches[1]) ? searches[1] : []
+    );
+    const ids = candidates.filter(function (item) {
+        return (
+            item.name === 'BING_REWARDS_ACCOUNTS'
+            || /^bing_(?:ck|search_ck|token)_\d+$/.test(
+                String(item.name || '')
+            )
+        ) && String(item.remarks || '').startsWith('由浏览器扩展同步');
+    }).map(function (item) {
+        return item.id || item._id;
+    });
+    return deleteEnvIds(origin, apiToken, Array.from(new Set(ids)));
+}
+
+function mergeAccountByIdentity(existing, incoming) {
+    return globalThis.BingCkCodec.mergeAccountByIdentity(
+        existing,
+        incoming
+    );
 }
 
 async function syncToQingLong(mode) {
@@ -581,7 +742,7 @@ async function syncToQingLong(mode) {
         syncAccounts = exportAccounts(true);
     }
     const pendingText = mode === 'selected'
-        ? '正在按备注同步所选账号“' + syncAccounts[0].name + '”…'
+        ? '正在按身份同步所选账号“' + syncAccounts[0].name + '”…'
         : '正在覆盖同步 ' + syncAccounts.length + ' 个账号到青龙…';
     setMessage(elements['copy-status'], pendingText, true);
     chrome.storage.session.set({
@@ -599,42 +760,26 @@ async function syncToQingLong(mode) {
         ''
     );
     const apiToken = tokenData.token;
+    const state = await getQingLongAccountState(origin, apiToken);
     if (mode === 'selected') {
-        const existing = await getQingLongAccounts(origin, apiToken);
-        syncAccounts = mergeAccountByRemark(existing, syncAccounts[0]);
+        const existing = state.records.map(function (record) {
+            return record.account;
+        });
+        syncAccounts = mergeAccountByIdentity(existing, syncAccounts[0]);
     }
-    await upsertEnv(
+    const removed = await reconcileBingCkEnvs(
         origin,
         apiToken,
-        'BING_REWARDS_ACCOUNTS',
-        JSON.stringify(syncAccounts),
-        '由浏览器扩展同步'
+        syncAccounts,
+        state.bingEnvs,
+        mode === 'all'
     );
-    for (let index = 0; index < syncAccounts.length; index++) {
-        const account = syncAccounts[index];
-        const suffix = String(index + 1);
-        const accountRemarks = '由浏览器扩展同步｜' + account.name;
-        await upsertEnv(
-            origin, apiToken, 'bing_ck_' + suffix,
-            account.cookie, accountRemarks
-        );
-        await upsertEnv(
-            origin, apiToken, 'bing_search_ck_' + suffix,
-            account.searchCookie, accountRemarks
-        );
-        await upsertEnv(
-            origin, apiToken, 'bing_token_' + suffix,
-            account.refreshToken, accountRemarks
-        );
-    }
-    const removed = await deleteStaleIndexedEnvs(
-        origin,
-        apiToken,
-        syncAccounts.length
-    );
+    const legacyRemoved = await deleteLegacyExtensionEnvs(origin, apiToken);
     await recordSyncStatus(
-        '同步成功：青龙现有 ' + syncAccounts.length + ' 个账号'
-            + (removed ? '，清理 ' + removed + ' 个旧编号变量。' : '。'),
+        '同步成功：写入 ' + syncAccounts.length + ' 条同名 bing_ck'
+            + (removed + legacyRemoved
+                ? '，清理 ' + (removed + legacyRemoved) + ' 条旧变量。'
+                : '。'),
         true
     );
 }
@@ -694,8 +839,8 @@ elements['copy-cookie'].addEventListener('click', function () {
     const selected = selectedAccount();
     if (!selected) return;
     copyText(
-        selected.cookie,
-        '“' + selected.name + '”的 Rewards Cookie 已复制。'
+        globalThis.BingCkCodec.encodeAccount(selected),
+        '“' + selected.name + '”的 bing_ck 已复制。'
     ).catch(function (error) {
         setMessage(elements['copy-status'], error.message, false);
     });
@@ -703,9 +848,13 @@ elements['copy-cookie'].addEventListener('click', function () {
 
 elements['copy-json'].addEventListener('click', function () {
     try {
+        const values = exportAccounts(false).map(function (account) {
+            return 'bing_ck='
+                + globalThis.BingCkCodec.encodeAccount(account);
+        });
         copyText(
-            JSON.stringify(exportAccounts(false), null, 2),
-            accounts.length + ' 个账号 JSON 已复制。'
+            values.join('\n\n'),
+            accounts.length + ' 条独立 bing_ck 已复制。'
         ).catch(function (error) {
             setMessage(elements['copy-status'], error.message, false);
         });

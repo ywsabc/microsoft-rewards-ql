@@ -17,8 +17,10 @@ test('CookieJar scopes Bing cookies and merges per-request cookies', function ()
     assert.equal(jar.getHeader('https://login.live.com/', ''), '');
 });
 
-test('parseAccounts accepts multi-account JSON', function () {
+test('parseAccounts accepts legacy multi-account JSON during migration', function () {
     const previous = process.env.BING_REWARDS_ACCOUNTS;
+    const previousBingCk = process.env.bing_ck;
+    delete process.env.bing_ck;
     process.env.BING_REWARDS_ACCOUNTS = JSON.stringify([
         {
             name: 'A',
@@ -38,19 +40,110 @@ test('parseAccounts accepts multi-account JSON', function () {
     assert.equal(accounts[1].authCode, 'c2');
     if (previous === undefined) delete process.env.BING_REWARDS_ACCOUNTS;
     else process.env.BING_REWARDS_ACCOUNTS = previous;
+    if (previousBingCk === undefined) delete process.env.bing_ck;
+    else process.env.bing_ck = previousBingCk;
 });
 
-test('parseAccounts rejects duplicate remarks, cookies, OAuth identities, and crossed Bing sessions', function () {
+test('bing_ck keeps one QingLong row per account and survives ampersand aggregation', function () {
+    const previousBingCk = process.env.bing_ck;
+    const previousLegacy = process.env.BING_REWARDS_ACCOUNTS;
+    const accounts = [
+        {
+            name: '甲',
+            cookie: '_U=user-a; .MSA.Auth=auth&a; MUID=rewards-a',
+            searchCookie: '_U=user-a; MUID=search-a',
+            refreshToken: 'token&a',
+            oauthRuid: 'oauth-a'
+        },
+        {
+            name: '乙',
+            cookie: '_U=user-b; _C_Auth=auth-b; MUID=rewards-b',
+            searchCookie: '_U=user-b; MUID=search-b',
+            refreshToken: 'token-b',
+            oauthRuid: 'oauth-b'
+        },
+        {
+            name: '丙',
+            cookie: '_U=user-c; .MSA.Auth=auth-c; MUID=rewards-c',
+            searchCookie: '_U=user-c; MUID=search-c',
+            refreshToken: 'token-c',
+            oauthRuid: 'oauth-c'
+        }
+    ];
+    try {
+        const rows = accounts.map(runtime.encodeBingCkAccount);
+        assert.equal(rows.length, 3);
+        for (const row of rows) {
+            assert.match(row, /^__bing_account=/);
+            assert.match(row, /&_U=/);
+            assert.doesNotMatch(row, /;\s*_U=/);
+        }
+        process.env.bing_ck = rows.slice().reverse().join('&');
+        process.env.BING_REWARDS_ACCOUNTS = JSON.stringify([
+            { name: '不应读取', cookie: '_U=legacy' }
+        ]);
+        const parsed = runtime.parseAccounts();
+        assert.deepEqual(parsed.map(function (account) {
+            return account.name;
+        }), ['丙', '乙', '甲']);
+        const first = parsed.find(function (account) {
+            return account.name === '甲';
+        });
+        assert.equal(
+            first.cookie,
+            '_U=user-a; .MSA.Auth=auth&a; MUID=rewards-a'
+        );
+        assert.equal(first.searchCookie, '_U=user-a; MUID=search-a');
+        assert.equal(first.refreshToken, 'token&a');
+        assert.equal(first.oauthRuid, 'oauth-a');
+    } finally {
+        if (previousBingCk === undefined) delete process.env.bing_ck;
+        else process.env.bing_ck = previousBingCk;
+        if (previousLegacy === undefined) {
+            delete process.env.BING_REWARDS_ACCOUNTS;
+        } else {
+            process.env.BING_REWARDS_ACCOUNTS = previousLegacy;
+        }
+    }
+});
+
+test('plain bing_ck accepts one account with ampersand-separated Cookie fields', function () {
+    const previousBingCk = process.env.bing_ck;
+    const previousLegacy = process.env.BING_REWARDS_ACCOUNTS;
+    try {
+        process.env.bing_ck = '_U=plain-user&.MSA.Auth=plain-auth&MUID=plain-muid';
+        delete process.env.BING_REWARDS_ACCOUNTS;
+        const accounts = runtime.parseAccounts();
+        assert.equal(accounts.length, 1);
+        assert.equal(
+            accounts[0].cookie,
+            '_U=plain-user; .MSA.Auth=plain-auth; MUID=plain-muid'
+        );
+        assert.match(accounts[0].name, /^Bing-[a-f0-9]{8}$/);
+    } finally {
+        if (previousBingCk === undefined) delete process.env.bing_ck;
+        else process.env.bing_ck = previousBingCk;
+        if (previousLegacy === undefined) {
+            delete process.env.BING_REWARDS_ACCOUNTS;
+        } else {
+            process.env.BING_REWARDS_ACCOUNTS = previousLegacy;
+        }
+    }
+});
+
+test('parseAccounts rejects duplicate identities and crossed Bing sessions', function () {
     const previous = process.env.BING_REWARDS_ACCOUNTS;
+    const previousBingCk = process.env.bing_ck;
+    delete process.env.bing_ck;
     const parse = function (accounts) {
         process.env.BING_REWARDS_ACCOUNTS = JSON.stringify(accounts);
-        return function () { runtime.parseAccounts(); };
+        return function () { return runtime.parseAccounts(); };
     };
     try {
-        assert.throws(parse([
+        assert.equal(parse([
             { name: '账号', cookie: '_U=a', searchCookie: '_U=a' },
             { name: '账号', cookie: '_U=b', searchCookie: '_U=b' }
-        ]), /账号备注重复/);
+        ])().length, 2);
         assert.throws(parse([
             { name: '账号1', cookie: '_U=a', searchCookie: '_U=a' },
             { name: '账号2', cookie: '_U=a', searchCookie: '_U=a' }
@@ -90,6 +183,8 @@ test('parseAccounts rejects duplicate remarks, cookies, OAuth identities, and cr
         } else {
             process.env.BING_REWARDS_ACCOUNTS = previous;
         }
+        if (previousBingCk === undefined) delete process.env.bing_ck;
+        else process.env.bing_ck = previousBingCk;
     }
 });
 
