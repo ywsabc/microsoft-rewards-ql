@@ -62,6 +62,8 @@ Rewards 认证 Cookie 会因页面版本不同使用 `.MSA.Auth` 或 `_C_Auth`�
 
 - `cookies`：分别读取 Bing 搜索页与 Rewards 页面实际会发送的 Cookie；
 - `clipboardWrite`：在用户点击按钮后复制配置；
+- `scripting`：仅在扩展后台的 Rewards Cookie 校验被 401 拒绝时，在用户已打开的
+  Rewards 页面主环境中执行同源身份查询；只返回 HTTP 状态和积分余额；
 - `storage`：使用 `chrome.storage.session` 暂存多账号 Cookie、Token、OAuth 状态和
   同步结果；勾选保存时使用 `chrome.storage.local` 保存青龙连接信息；
 - `https://bing.com/*`、`https://*.bing.com/*`：Cookie API 所需站点权限；
@@ -97,5 +99,10 @@ Cookie 字段用 `&` 分隔，账号用内部边界和身份指纹识别，不�
 从 `3.1.1` 起，如果授权码首次换出的 Access Token 被 Rewards 身份接口返回 401，
 扩展会使用同次授权得到的 refreshToken 和完整 Rewards scope 刷新一次，再重新执行
 `ruid`、余额和 Cookie 指纹校验；不会因为 401 跳过身份校验或放宽多账号串号保护。
+
+从 `3.1.2` 起，如果扩展后台请求因浏览器 Cookie 隐私策略返回
+`Rewards Cookie 身份校验 HTTP 401`，扩展会在用户已登录并打开的 Rewards 页面中
+执行同源查询；如果旧 `getuserinfo` 接口仍为 401，则从当前 `/earn` 页面数据读取
+余额，再继续与 Cookie 指纹及 OAuth `ruid` 核对。
 
 导出的 Cookie 等同敏感登录凭据。请勿提交到 GitHub、截图分享或粘贴到不可信网站。
