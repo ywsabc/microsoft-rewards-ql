@@ -77,11 +77,8 @@ function randomAccountId() {
 }
 
 function normalizeAccountName(value, fallback) {
-    return String(value || fallback || '账号').trim().slice(0, 60) || '账号';
-}
-
-function accountNameKey(value) {
-    return normalizeAccountName(value).toLocaleLowerCase();
+    return String(value || fallback || 'Bing账号').trim().slice(0, 60)
+        || 'Bing账号';
 }
 
 function getCookies(query) {
@@ -191,7 +188,10 @@ function normalizeAccount(input, index) {
     if (!cookieFingerprint || !cookie || !searchCookie) return null;
     return {
         id: String(input.id || randomAccountId()),
-        name: normalizeAccountName(input.name, '账号' + (index + 1)),
+        name: normalizeAccountName(
+            input.name,
+            'Bing-' + cookieFingerprint.slice(0, 8)
+        ),
         cookieFingerprint: cookieFingerprint,
         cookie: cookie,
         searchCookie: searchCookie,
@@ -228,7 +228,7 @@ async function captureAccount(input) {
     const mode = input.mode === 'replace' ? 'replace' : 'new';
     const requestedName = normalizeAccountName(
         input.name,
-        '账号' + (accounts.length + 1)
+        'Bing-' + fingerprint.slice(0, 8)
     );
     let account = null;
     if (mode === 'replace') {
@@ -236,13 +236,6 @@ async function captureAccount(input) {
             return item.id === String(input.accountId || '');
         });
         if (!account) throw new Error('所选账号不存在');
-        const duplicateName = accounts.find(function (item) {
-            return item.id !== account.id
-                && accountNameKey(item.name) === accountNameKey(requestedName);
-        });
-        if (duplicateName) {
-            throw new Error('账号备注已存在：' + duplicateName.name);
-        }
         const duplicateCookie = accounts.find(function (item) {
             return item.id !== account.id
                 && item.cookieFingerprint === fingerprint;
@@ -256,18 +249,6 @@ async function captureAccount(input) {
         const sameCookie = accounts.find(function (item) {
             return item.cookieFingerprint === fingerprint;
         });
-        const sameName = accounts.find(function (item) {
-            return accountNameKey(item.name) === accountNameKey(requestedName);
-        });
-        if (
-            sameName
-            && (!sameCookie || sameName.id !== sameCookie.id)
-        ) {
-            throw new Error(
-                '账号备注“' + requestedName
-                    + '”已绑定其他浏览器会话，请使用“更新所选账号”'
-            );
-        }
         account = sameCookie || null;
     }
     if (!account) {
@@ -307,11 +288,6 @@ async function renameAccount(accountId, name) {
     });
     if (!account) throw new Error('所选账号不存在');
     const requestedName = normalizeAccountName(name, account.name);
-    const duplicate = accounts.find(function (item) {
-        return item.id !== account.id
-            && accountNameKey(item.name) === accountNameKey(requestedName);
-    });
-    if (duplicate) throw new Error('账号备注已存在：' + duplicate.name);
     account.name = requestedName;
     await saveAccounts(accounts);
     return account;

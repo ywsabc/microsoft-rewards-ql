@@ -33,7 +33,7 @@
       <label for="account-select">已保存账号</label>
       <select id="account-select" size="4" aria-describedby="account-status"></select>
       <label for="account-name">账号备注</label>
-      <input id="account-name" type="text" maxlength="60" value="账号1" autocomplete="off">
+      <input id="account-name" type="text" maxlength="60" placeholder="可选备注" autocomplete="off">
       <div class="actions">
         <button id="add-account" type="button" class="primary">添加当前账号</button>
         <button id="replace-account" type="button">更新所选会话</button>
@@ -59,8 +59,8 @@
     <section class="card" aria-labelledby="export-title">
       <h2 id="export-title">3. 导出或同步全部账号</h2>
       <div class="actions">
-        <button id="copy-cookie" type="button">复制所选 Cookie</button>
-        <button id="copy-json" type="button" class="primary">复制全部账号 JSON</button>
+        <button id="copy-cookie" type="button">复制所选 bing_ck</button>
+        <button id="copy-json" type="button" class="primary">复制全部 bing_ck</button>
       </div>
       <hr>
       <label for="ql-url">青龙地址</label>
@@ -76,7 +76,7 @@
       <p class="hint">勾选后，青龙地址、Client ID 和 Secret 会保存在本机浏览器扩展存储中。</p>
       <div class="actions">
         <button id="clear-settings" type="button">清除保存信息</button>
-        <button id="sync-selected-ql" type="button">按备注同步所选</button>
+        <button id="sync-selected-ql" type="button">按身份同步所选</button>
       </div>
       <button id="sync-ql" type="button" class="primary wide">覆盖同步列表全部账号</button>
       <p id="copy-status" class="message" role="status" aria-live="polite"></p>
@@ -98,6 +98,7 @@
       </ul>
     </details>
   </main>
+  <script src="bing-ck.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

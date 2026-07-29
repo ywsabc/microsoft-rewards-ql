@@ -74,6 +74,11 @@ test('QingLong guide documents a proxyless CDN and safe proxy fallback', functio
     assert.match(guide, /标准 HTTP\/HTTPS 代理地址/);
     assert.match(guide, /不要为拉取源码给全部青龙任务设置全局代理/);
     assert.match(guide, /分支可缓存 12 小时/);
+    assert.match(guide, /每个账号一条环境/);
+    assert.match(guide, /所有账号都使用同一个名称/);
+    assert.match(guide, /bing_ck/);
+    assert.match(guide, /__bing_account/);
+    assert.match(guide, /不按备注或所在顺序绑定/);
     assert.match(
         guide,
         /公开镜像能够修改下载到的可执行\s*脚本/
@@ -110,7 +115,7 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '3.0.2');
+    assert.equal(manifest.version, '3.1.0');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(manifest.permissions.sort(), ['clipboardWrite', 'cookies', 'storage']);
     assert.deepEqual(
@@ -182,16 +187,22 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(popupSource, /searchCookie:\s*cachedBingCookieHeader/);
     assert.match(popupSource, /fingerprintCookies/);
     assert.match(popupSource, /https:\/\/www\.bing\.com\//);
-    assert.match(popupSource, /'bing_search_ck_' \+ suffix/);
+    const codecSource = fs.readFileSync(
+        path.join(root, 'browser-extension', 'bing-ck.js'),
+        'utf8'
+    );
+    assert.match(codecSource, /const ACCOUNT_MARKER = '__bing_account'/);
+    assert.match(codecSource, /fields\.join\('&'\)/);
+    assert.match(codecSource, /mergeAccountByIdentity/);
+    assert.match(popupSource, /getExactEnvs\(origin, apiToken, 'bing_ck'\)/);
     assert.match(
         popupSource,
         /const SAVED_SETTING_IDS = \[\s*'ql-url',\s*'ql-client-id',\s*'ql-client-secret'\s*\]/
     );
-    assert.match(popupSource, /bing_token_' \+ suffix/);
     assert.match(popupSource, /由浏览器扩展同步｜/);
-    assert.match(popupSource, /deleteStaleIndexedEnvs/);
-    assert.match(popupSource, /getQingLongAccounts/);
-    assert.match(popupSource, /mergeAccountByRemark/);
+    assert.match(popupSource, /deleteLegacyExtensionEnvs/);
+    assert.match(popupSource, /getQingLongAccountState/);
+    assert.match(popupSource, /mergeAccountByIdentity/);
     assert.match(popupSource, /syncToQingLong\('selected'\)/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_authorize\.srf/);
     assert.match(backgroundSource, /https:\/\/login\.live\.com\/oauth20_token\.srf/);
@@ -199,6 +210,9 @@ test('browser extension keeps account tokens in session and persists only opted-
     assert.match(popupSource, /chrome\.permissions\.remove/);
     assert.match(popupSource, /\/open\/auth\/token/);
     assert.match(popupSource, /BING_REWARDS_ACCOUNTS/);
+    assert.doesNotMatch(popupSource, /'bing_ck_' \+ suffix/);
+    assert.doesNotMatch(popupSource, /'bing_search_ck_' \+ suffix/);
+    assert.doesNotMatch(popupSource, /'bing_token_' \+ suffix/);
 });
 
 test('browser extension page contains every element referenced by popup logic', function () {
@@ -209,6 +223,11 @@ test('browser extension page contains every element referenced by popup logic', 
     const popupHtml = fs.readFileSync(
         path.join(root, 'browser-extension', 'popup.html'),
         'utf8'
+    );
+    assert.ok(
+        popupHtml.indexOf('src="bing-ck.js"')
+            < popupHtml.indexOf('src="popup.js"'),
+        'bing_ck codec must load before popup logic'
     );
     const ids = new Set(Array.from(popupHtml.matchAll(/\bid="([^"]+)"/g), function (match) {
         return match[1];

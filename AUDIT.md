@@ -70,7 +70,8 @@ Punch Card 和部分 Quiz 页面交互没有做虚假兼容。
 13. 分离 Bing 搜索与 Rewards Cookie，OAuth 强制选择账号并绑定 Cookie 会话指纹。
 14. 修复 OAuth 状态查询遗漏账号指纹的问题，并消除快速 SSO 回调与状态写入的竞态。
 15. 将扩展重构为 session 级多账号仓库，为每个账号独立绑定 Cookie、搜索 Cookie
-    和 refreshToken，并支持一次同步完整账号数组及编号变量。
+    和 refreshToken；青龙侧每个账号使用一条同名 `bing_ck`，不再依赖数组、备注或
+    编号变量定位账号。
 16. 搜索积分改为以余额变化和最终仪表板确认，不再把 `RewardsIncrement` 字段直接
     当作已入账；未确认活动卡片增加持久化冷却，避免定时任务重复提交。
 17. 对齐新版 Rewards 页面 `reportActivity` Server Action，并以二次读取仪表板

@@ -28,30 +28,27 @@ Edge 和其他兼容的 Chromium 浏览器。
    写入所选账号；
 5. 在 Bing 与 Rewards 中切换到下一个账号，重复步骤 3、4；
 6. 填写青龙地址及具有 `envs` 权限的 OpenAPI Client ID、Client Secret；
-7. 可以点击“按备注同步所选”，把当前账号合并进青龙已有数组；也可以在所有账号都
+7. 可以点击“按身份同步所选”，把当前账号合并进青龙现有记录；也可以在所有账号都
    显示“Token 已获取”后，点击“覆盖同步列表全部账号”。
 
-“账号备注”是账号身份键：同一备注若已绑定其他浏览器会话，直接再次添加会被拒绝；
-只有明确点击“更新所选账号”才会替换，并清除旧 Token 要求重新授权。不同备注会进入
-不同的编号变量。编号变量在青龙中的备注格式为
-`由浏览器扩展同步｜账号备注`。“按备注同步所选”会保留青龙中其他备注的账号，并在
-原位置更新同名账号或把新备注追加到末尾。
+账号备注只用于显示，不再作为同步身份键。扩展使用 Cookie 指纹和 OAuth `ruid`
+定位账号；Cookie 与 Token 命中不同账号时会拒绝同步。只有明确点击“更新所选账号”
+才会替换浏览器会话，并在身份变化时清除旧 Token、要求重新授权。
 
 账号列表、Cookie 和 refreshToken 保存在 `chrome.storage.session`。关闭插件小窗后
 仍可继续切换账号；浏览器重启、扩展更新或停用后会自动清除。青龙地址、OpenAPI
 Client ID 和 Secret 只有在勾选“保存青龙连接信息”时才写入
 `chrome.storage.local`。
 
-同步会新增或更新：
+同步后，一个账号对应青龙中的一条 `bing_ck`；所有账号的变量名完全相同，不添加
+`_1`、`_2` 等序号。每条值内的 Cookie 字段用 `&` 分隔，并以扩展生成的
+`__bing_account` 字段作为账号边界。搜索 Cookie、refreshToken、`oauthRuid` 和
+Cookie 指纹也保存在对应账号的同一条 `bing_ck` 中。
 
-- `BING_REWARDS_ACCOUNTS`
-- `bing_ck_1`、`bing_search_ck_1`、`bing_token_1`
-- `bing_ck_2`、`bing_search_ck_2`、`bing_token_2`
-- 后续账号按相同规则递增
-
-减少账号后再次同步，扩展只会删除备注为“由浏览器扩展同步”的多余编号变量，不会
-删除用户自行创建的同名范围外变量。青龙脚本优先读取完整的
-`BING_REWARDS_ACCOUNTS` 数组。
+“按身份同步所选”会保留其他 `bing_ck`，只更新 Cookie 指纹或 `oauthRuid` 命中的
+账号；“覆盖同步”会让青龙中的 `bing_ck` 与扩展列表一致。首次成功同步后，扩展会
+删除它以前创建的 `BING_REWARDS_ACCOUNTS` 及 `bing_ck_1`、
+`bing_search_ck_1`、`bing_token_1` 等旧编号变量。
 
 旧版 Rewards 实现可能下发 `tifacfaatcs`，但当前登录会话不一定包含它。扩展不会再
 把该旧 Cookie 当作登录必需字段。
@@ -89,7 +86,10 @@ Rewards 认证 Cookie 会因页面版本不同使用 `.MSA.Auth` 或 `_C_Auth`�
 
 从 `3.0.2` 起，扩展在授权开始和 OAuth 回调时都会重新读取 Bing/Rewards 当前
 Cookie 指纹，并用 Rewards Cookie 余额与 DAPI 余额做精确核对。授权过程中切号、
-同名备注误换号或选择了另一个 Microsoft 账号时不会保存 Token。同步 JSON 也会包含
+同名备注误换号或选择了另一个 Microsoft 账号时不会保存 Token。同步数据也会包含
 `cookieFingerprint`，供青龙核心再次校验。
+
+从 `3.1.0` 起，青龙环境变量改为 JD_COOKIE 风格：每个账号一条同名 `bing_ck`，
+Cookie 字段用 `&` 分隔，账号用内部边界和身份指纹识别，不再创建数组或编号变量。
 
 导出的 Cookie 等同敏感登录凭据。请勿提交到 GitHub、截图分享或粘贴到不可信网站。

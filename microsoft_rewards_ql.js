@@ -463,24 +463,204 @@ function accountCookieIdentity(cookie, searchCookie) {
     };
 }
 
+const BING_CK_ACCOUNT_MARKER = '__bing_account';
+const BING_CK_VERSION = '__bing_v';
+const BING_CK_METADATA = new Set([
+    BING_CK_ACCOUNT_MARKER,
+    BING_CK_VERSION,
+    '__bing_search',
+    '__bing_token',
+    '__bing_ruid',
+    '__bing_name',
+    '__bing_fp'
+]);
+
+function encodeBingCkMetadata(value) {
+    return Buffer.from(String(value || ''), 'utf8').toString('base64url');
+}
+
+function decodeBingCkMetadata(value, field, index) {
+    if (!value) return '';
+    if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+        throw new Error(
+            'bing_ck 第 ' + (index + 1) + ' 个账号的 ' + field + ' 格式错误'
+        );
+    }
+    try {
+        const bytes = Buffer.from(value, 'base64url');
+        if (bytes.toString('base64url') !== value) {
+            throw new Error('non-canonical base64url');
+        }
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (_) {
+        throw new Error(
+            'bing_ck 第 ' + (index + 1) + ' 个账号的 ' + field + ' 无法解码'
+        );
+    }
+}
+
+function splitBingCkAccountRecords(raw) {
+    const fields = String(raw || '').trim().split('&').map(function (field) {
+        return field.trim();
+    }).filter(Boolean);
+    if (!fields.length) return [];
+    const records = [];
+    let current = [];
+    for (const field of fields) {
+        const key = field.split('=', 1)[0];
+        if (key === BING_CK_ACCOUNT_MARKER && current.length) {
+            records.push(current.join('&'));
+            current = [];
+        }
+        current.push(field);
+    }
+    if (current.length) records.push(current.join('&'));
+    if (
+        records.length > 1
+        && !records.every(function (record) {
+            return record.startsWith(BING_CK_ACCOUNT_MARKER + '=');
+        })
+    ) {
+        throw new Error(
+            '多个 bing_ck 账号缺少账号边界标记，请用新版浏览器扩展重新同步'
+        );
+    }
+    return records;
+}
+
+function decodeBingCkAccount(record, index) {
+    const rawPairs = String(record || '').split('&').filter(Boolean).map(
+        function (part) {
+            const position = part.indexOf('=');
+            if (position <= 0) {
+                throw new Error(
+                    'bing_ck 第 ' + (index + 1) + ' 个账号存在无效 Cookie 字段'
+                );
+            }
+            return [part.slice(0, position).trim(), part.slice(position + 1)];
+        }
+    );
+    const versioned = rawPairs.some(function (pair) {
+        return pair[0] === BING_CK_VERSION && pair[1] === '1';
+    });
+    const values = new Map();
+    for (const rawPair of rawPairs) {
+        let key = rawPair[0];
+        let value = rawPair[1];
+        if (versioned && !BING_CK_METADATA.has(key)) {
+            try {
+                key = decodeURIComponent(key);
+                value = decodeURIComponent(value);
+            } catch (_) {
+                throw new Error(
+                    'bing_ck 第 ' + (index + 1) + ' 个账号 Cookie 转义错误'
+                );
+            }
+        }
+        values.set(key, value);
+    }
+    const cookie = Array.from(values.entries()).filter(function (entry) {
+        return !BING_CK_METADATA.has(entry[0]);
+    }).map(function (entry) {
+        return entry[0] + '=' + entry[1];
+    }).join('; ');
+    if (!cookie) {
+        throw new Error('bing_ck 第 ' + (index + 1) + ' 个账号缺少 Cookie');
+    }
+    return {
+        name: decodeBingCkMetadata(
+            values.get('__bing_name'),
+            '账号备注',
+            index
+        ),
+        cookie: cookie,
+        searchCookie: decodeBingCkMetadata(
+            values.get('__bing_search'),
+            '搜索 Cookie',
+            index
+        ) || cookie,
+        refreshToken: decodeBingCkMetadata(
+            values.get('__bing_token'),
+            'refreshToken',
+            index
+        ),
+        authCode: '',
+        oauthRuid: decodeBingCkMetadata(
+            values.get('__bing_ruid'),
+            'oauthRuid',
+            index
+        ),
+        cookieFingerprint: String(values.get('__bing_fp') || '')
+    };
+}
+
+function decodeBingCkAccounts(raw) {
+    return splitBingCkAccountRecords(raw).map(decodeBingCkAccount);
+}
+
+function encodeBingCkAccount(account) {
+    if (!account || typeof account !== 'object') {
+        throw new Error('bing_ck 账号格式错误');
+    }
+    const cookie = String(account.cookie || '');
+    if (!cookie) throw new Error('bing_ck 账号缺少 Cookie');
+    const searchCookie = String(account.searchCookie || cookie);
+    const identity = accountCookieIdentity(cookie, searchCookie);
+    if (
+        account.cookieFingerprint
+        && String(account.cookieFingerprint) !== identity.fingerprint
+    ) {
+        throw new Error('bing_ck Cookie 指纹校验失败');
+    }
+    if (
+        identity.rewardsU
+        && identity.searchU
+        && identity.rewardsU !== identity.searchU
+    ) {
+        throw new Error('bing_ck 的 Rewards Cookie 与搜索 Cookie 不属于同一会话');
+    }
+    const oauthRuid = String(account.oauthRuid || '');
+    const marker = oauthRuid
+        ? 'oauth.' + encodeBingCkMetadata(oauthRuid)
+        : 'cookie.' + identity.fingerprint;
+    const fields = [
+        BING_CK_ACCOUNT_MARKER + '=' + marker,
+        BING_CK_VERSION + '=1'
+    ];
+    for (const entry of parseCookieHeader(cookie).entries()) {
+        if (BING_CK_METADATA.has(entry[0])) continue;
+        fields.push(
+            encodeURIComponent(entry[0]) + '=' + encodeURIComponent(entry[1])
+        );
+    }
+    fields.push(
+        '__bing_search=' + encodeBingCkMetadata(searchCookie),
+        '__bing_fp=' + identity.fingerprint
+    );
+    if (account.refreshToken) {
+        fields.push(
+            '__bing_token=' + encodeBingCkMetadata(account.refreshToken)
+        );
+    }
+    if (oauthRuid) {
+        fields.push('__bing_ruid=' + encodeBingCkMetadata(oauthRuid));
+    }
+    if (account.name) {
+        fields.push('__bing_name=' + encodeBingCkMetadata(account.name));
+    }
+    return fields.join('&');
+}
+
 function validateAccounts(accounts) {
-    const names = new Map();
     const cookies = new Map();
     const oauthUsers = new Map();
     for (const account of accounts) {
-        const nameKey = String(account.name || '').trim().toLocaleLowerCase();
-        if (names.has(nameKey)) {
-            throw new Error(
-                '账号备注重复：“' + names.get(nameKey)
-                    + '”与“' + account.name + '”'
-            );
-        }
-        names.set(nameKey, account.name);
-
         const identity = accountCookieIdentity(
             account.cookie,
             account.searchCookie
         );
+        account.name = String(account.name || '').trim()
+            || ('Bing-' + identity.fingerprint.slice(0, 8));
         if (
             identity.rewardsU
             && identity.searchU
@@ -2806,6 +2986,10 @@ class RewardsRunner {
 }
 
 function parseAccounts() {
+    const bingCk = String(process.env.bing_ck || '').trim();
+    if (bingCk) {
+        return validateAccounts(decodeBingCkAccounts(bingCk));
+    }
     const raw = String(process.env.BING_REWARDS_ACCOUNTS || '').trim();
     if (raw) {
         const parsed = safeJson(raw);
@@ -2992,7 +3176,7 @@ async function preflightOAuthBindings(runners) {
 async function main() {
     const accounts = parseAccounts();
     if (accounts.length === 0) {
-        throw new Error('未配置账号，请设置 BING_REWARDS_ACCOUNTS 或 BING_REWARDS_COOKIE');
+        throw new Error('未配置账号，请在青龙中为每个账号添加一条 bing_ck');
     }
     for (const account of accounts) {
         if (!account.cookie) throw new Error('账号 ' + account.name + ' 缺少 cookie');
@@ -3051,6 +3235,8 @@ module.exports = {
     parseHotSearchResponse: parseHotSearchResponse,
     loadHotSearchWords: loadHotSearchWords,
     accountCookieIdentity: accountCookieIdentity,
+    encodeBingCkAccount: encodeBingCkAccount,
+    decodeBingCkAccounts: decodeBingCkAccounts,
     validateAccounts: validateAccounts,
     parseAccounts: parseAccounts,
     buildConfig: buildConfig,
