@@ -94,4 +94,8 @@ Cookie 指纹，并用 Rewards Cookie 余额与 DAPI 余额做精确核对。授
 从 `3.1.0` 起，青龙环境变量改为 JD_COOKIE 风格：每个账号一条同名 `bing_ck`，
 Cookie 字段用 `&` 分隔，账号用内部边界和身份指纹识别，不再创建数组或编号变量。
 
+从 `3.1.1` 起，如果授权码首次换出的 Access Token 被 Rewards 身份接口返回 401，
+扩展会使用同次授权得到的 refreshToken 和完整 Rewards scope 刷新一次，再重新执行
+`ruid`、余额和 Cookie 指纹校验；不会因为 401 跳过身份校验或放宽多账号串号保护。
+
 导出的 Cookie 等同敏感登录凭据。请勿提交到 GitHub、截图分享或粘贴到不可信网站。

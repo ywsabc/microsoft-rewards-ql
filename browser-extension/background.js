@@ -339,21 +339,22 @@ async function inspectOAuthToken(accessToken) {
     const response = await fetch(REWARDS_DAPI_ME, {
         headers: {
             authorization: 'Bearer ' + accessToken,
-            'content-type': 'application/json',
+            'content-type': 'application/json; charset=UTF-8',
             'x-rewards-appid': REWARDS_APP_ID,
+            'x-rewards-ismobile': 'true',
             'x-rewards-country': 'cn',
-            'x-rewards-language': 'zh',
-            'x-rewards-os': 'Android',
-            'x-rewards-channel': 'SAAndroid'
+            'x-rewards-language': 'zh'
         }
     });
     const data = await response.json().catch(function () { return {}; });
     if (!response.ok) {
-        throw new Error(
+        const error = new Error(
             (data.response && data.response.message)
             || data.message
             || ('Rewards 身份校验 HTTP ' + response.status)
         );
+        error.httpStatus = response.status;
+        throw error;
     }
     const profile = data.response && data.response.profile;
     const ruid = String(profile && profile.ruid || '');
@@ -365,24 +366,67 @@ async function inspectOAuthToken(accessToken) {
     };
 }
 
-async function exchangeCode(code, oauthSession) {
-    const body = new URLSearchParams({
-        client_id: CLIENT_ID,
-        code: code,
-        redirect_uri: REDIRECT_URI,
-        grant_type: 'authorization_code'
-    });
+async function requestOAuthToken(parameters) {
+    const body = new URLSearchParams(parameters);
     const response = await fetch(TOKEN_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: body.toString()
     });
     const data = await response.json().catch(function () { return {}; });
-    if (!response.ok || !data.refresh_token) {
+    if (!response.ok || !data.access_token) {
         throw new Error(data.error_description || data.error || ('Token HTTP ' + response.status));
     }
-    if (!data.access_token) throw new Error('Token 响应缺少 access_token');
-    const oauthIdentity = await inspectOAuthToken(data.access_token);
+    return data;
+}
+
+async function refreshOAuthAccessToken(refreshToken) {
+    if (!refreshToken) throw new Error('Token 响应缺少 refresh_token');
+    return requestOAuthToken({
+        client_id: CLIENT_ID,
+        refresh_token: refreshToken,
+        scope: REWARDS_SCOPE,
+        grant_type: 'refresh_token'
+    });
+}
+
+async function exchangeCode(code, oauthSession) {
+    let tokenData = await requestOAuthToken({
+        client_id: CLIENT_ID,
+        code: code,
+        redirect_uri: REDIRECT_URI,
+        grant_type: 'authorization_code'
+    });
+    if (!tokenData.refresh_token) {
+        throw new Error('Token 响应缺少 refresh_token');
+    }
+    let oauthIdentity;
+    try {
+        oauthIdentity = await inspectOAuthToken(tokenData.access_token);
+    } catch (error) {
+        if (error.httpStatus !== 401) throw error;
+        const refreshed = await refreshOAuthAccessToken(
+            tokenData.refresh_token
+        );
+        tokenData = {
+            access_token: refreshed.access_token,
+            refresh_token: refreshed.refresh_token
+                || tokenData.refresh_token
+        };
+        try {
+            oauthIdentity = await inspectOAuthToken(
+                tokenData.access_token
+            );
+        } catch (retryError) {
+            if (retryError.httpStatus === 401) {
+                throw new Error(
+                    'Rewards 身份校验 HTTP 401（刷新 Token 后仍无效，'
+                    + '请确认该账号能正常打开 Rewards 页面后重新授权）'
+                );
+            }
+            throw retryError;
+        }
+    }
     const browserIdentity = await inspectBrowserRewardsSession();
     const accounts = await getAccounts();
     const account = accounts.find(function (item) {
@@ -417,7 +461,7 @@ async function exchangeCode(code, oauthSession) {
             + '”的同一 Microsoft 账号，请切换账号后重新授权'
         );
     }
-    account.refreshToken = data.refresh_token;
+    account.refreshToken = tokenData.refresh_token;
     account.oauthRuid = oauthIdentity.ruid;
     account.tokenAt = Date.now();
     account.oauthError = '';
