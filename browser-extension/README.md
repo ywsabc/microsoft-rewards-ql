@@ -8,10 +8,12 @@
 
 Chrome、Edge 或其他 Chromium 浏览器：
 
-1. 先解压 ZIP，浏览器不能直接加载 ZIP；
-2. 打开扩展管理页面并开启“开发者模式”；
-3. 点击“加载已解压的扩展程序”；
-4. 选择解压后**直接包含 `manifest.json`** 的目录。
+1. 从 [GitHub Releases](https://github.com/ywsabc/microsoft-rewards-ql/releases/latest)
+   下载 `microsoft-rewards-ql-extension-*.zip`；青龙拉取命令不会安装浏览器插件；
+2. 先解压 ZIP，浏览器不能直接加载 ZIP；
+3. 打开扩展管理页面并开启“开发者模式”；
+4. 点击“加载已解压的扩展程序”；
+5. 选择解压后**直接包含 `manifest.json`** 的目录。
 
 从 v2.0.2 开始，发布包根目录直接包含 `manifest.json`，不再额外嵌套一层同名文件夹。
 
