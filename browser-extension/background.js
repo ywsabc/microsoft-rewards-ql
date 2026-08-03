@@ -24,6 +24,8 @@ const OAUTH_SESSION_KEYS = [
     'oauthAccountId',
     'oauthCookieFingerprint'
 ];
+const OAUTH_TIMEOUT_MINUTES = 5;
+const OAUTH_TIMEOUT_ALARM = 'oauth-timeout';
 
 async function openDashboard() {
     const pageUrl = chrome.runtime.getURL(DASHBOARD_PAGE);
@@ -415,7 +417,8 @@ function parseCallback(url) {
         code: query.get('code') || hash.get('code') || '',
         state: query.get('state') || hash.get('state') || '',
         error: query.get('error_description') || query.get('error')
-            || hash.get('error_description') || hash.get('error') || ''
+            || hash.get('error_description') || hash.get('error') || '',
+        removed: query.get('removed') || hash.get('removed') || ''
     };
 }
 
@@ -589,6 +592,7 @@ async function startOAuth(accountId, cookieFingerprint) {
         try { await chrome.tabs.remove(previous.oauthTabId); } catch (_) {}
     }
     await chrome.storage.session.remove(OAUTH_SESSION_KEYS);
+    await chrome.alarms.clear(OAUTH_TIMEOUT_ALARM);
     const state = randomState();
     const url = new URL(AUTHORIZE_URL);
     url.search = new URLSearchParams({
@@ -608,7 +612,23 @@ async function startOAuth(accountId, cookieFingerprint) {
         oauthAccountId: account.id,
         oauthCookieFingerprint: account.cookieFingerprint
     });
+    await chrome.alarms.create(OAUTH_TIMEOUT_ALARM, {
+        delayInMinutes: OAUTH_TIMEOUT_MINUTES
+    });
     await chrome.tabs.update(tab.id, { url: url.toString(), active: true });
+}
+
+async function finishOAuthFlow(tabId) {
+    if (tabId) {
+        try { await chrome.tabs.remove(tabId); } catch (_) {}
+    }
+    await chrome.storage.session.remove(['oauthState', 'oauthTabId']);
+    await chrome.alarms.clear(OAUTH_TIMEOUT_ALARM);
+}
+
+async function failOAuthFlow(tabId, message, oauthSession) {
+    await setFailure(message, oauthSession);
+    await finishOAuthFlow(tabId);
 }
 
 chrome.tabs.onUpdated.addListener(async function (tabId, changeInfo) {
@@ -616,20 +636,48 @@ chrome.tabs.onUpdated.addListener(async function (tabId, changeInfo) {
     if (!url.startsWith(REDIRECT_URI)) return;
     const session = await chrome.storage.session.get(OAUTH_SESSION_KEYS);
     if (session.oauthTabId !== tabId || session.oauthStatus !== 'pending') return;
-    try {
-        const callback = parseCallback(url);
-        if (callback.error) throw new Error(callback.error);
-        if (!callback.code) throw new Error('OAuth 回调缺少 code');
+    const callback = parseCallback(url);
+    if (callback.code) {
         if (!callback.state || callback.state !== session.oauthState) {
-            throw new Error('OAuth state 校验失败');
+            await failOAuthFlow(tabId, 'OAuth state 校验失败', session);
+            return;
         }
-        await exchangeCode(callback.code, session);
-    } catch (error) {
-        await setFailure(error.message, session);
-    } finally {
-        chrome.tabs.remove(tabId).catch(function () {});
-        await chrome.storage.session.remove(['oauthState', 'oauthTabId']);
+        try {
+            await exchangeCode(callback.code, session);
+        } catch (error) {
+            await failOAuthFlow(tabId, error.message, session);
+            return;
+        }
+        await finishOAuthFlow(tabId);
+        return;
     }
+    if (callback.error) {
+        await failOAuthFlow(tabId, callback.error, session);
+        return;
+    }
+    if (callback.removed) {
+        await failOAuthFlow(
+            tabId,
+            'Microsoft 已移除该 OAuth 授权会话（removed=true），'
+                + '请先在浏览器重新登录 Bing Rewards 后重新授权',
+            session
+        );
+        return;
+    }
+    // 微软偶尔会先落地一个不带 code 的空回调（中间跳转），随后才携带
+    // code 再次重定向。此时保留授权页继续等待，而不是立即判失败。
+    console.warn('OAuth 回调暂未携带 code，继续等待:', url);
+});
+
+chrome.alarms.onAlarm.addListener(async function (alarm) {
+    if (!alarm || alarm.name !== OAUTH_TIMEOUT_ALARM) return;
+    const session = await chrome.storage.session.get(OAUTH_SESSION_KEYS);
+    if (session.oauthStatus !== 'pending') return;
+    await failOAuthFlow(
+        session.oauthTabId,
+        'OAuth 授权超时（未收到授权码），请重试',
+        session
+    );
 });
 
 async function accountStatus(accountId) {
@@ -685,6 +733,7 @@ async function clearAccountToken(accountId) {
             try { await chrome.tabs.remove(oauth.oauthTabId); } catch (_) {}
         }
         await chrome.storage.session.remove(OAUTH_SESSION_KEYS);
+        await chrome.alarms.clear(OAUTH_TIMEOUT_ALARM);
     }
 }
 
@@ -715,6 +764,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
             await chrome.storage.session.remove(
                 OAUTH_SESSION_KEYS.concat([ACCOUNT_STORAGE_KEY])
             );
+            await chrome.alarms.clear(OAUTH_TIMEOUT_ALARM);
             return { ok: true };
         }
         if (message.type === 'oauth:start') {

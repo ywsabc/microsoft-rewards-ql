@@ -115,6 +115,11 @@ function createBackgroundHarness(options) {
             lastError: null,
             getURL: function (file) { return 'chrome-extension://test/' + file; },
             onMessage: { addListener: function (listener) { listeners.message = listener; } }
+        },
+        alarms: {
+            create: async function () {},
+            clear: async function () { return true; },
+            onAlarm: { addListener: function (listener) { listeners.alarm = listener; } }
         }
     };
     const source = fs.readFileSync(
@@ -293,6 +298,12 @@ function createBackgroundHarness(options) {
         scriptingCalls: scriptingCalls,
         tabUpdates: tabUpdates,
         tokenRequests: tokenRequests,
+        tabUpdated: function (tabId, changeInfo) {
+            return listeners.tabUpdated(tabId, changeInfo);
+        },
+        alarmFired: function (alarm) {
+            return listeners.alarm(alarm);
+        },
         useAccount: function (suffix) {
             currentSuffix = String(suffix);
         }
@@ -598,4 +609,78 @@ test('OAuth callback rejects a different account even when the browser cookie st
     });
     assert.equal(status.status, 'error');
     assert.match(status.error, /余额.*不一致.*串号/);
+});
+
+test('OAuth keeps waiting on an empty callback and completes with the real code', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    const tabId = harness.session.oauthTabId;
+    await harness.tabUpdated(tabId, {
+        url: 'https://login.live.com/oauth20_desktop.srf'
+    });
+    assert.equal(harness.session.oauthStatus, 'pending');
+    assert.equal(harness.session.oauthTabId, tabId);
+    await harness.finishOAuth('authorization-code-1');
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    const list = await harness.send({ type: 'accounts:list' });
+    assert.equal(status.status, 'ready');
+    assert.equal(
+        list.accounts[0].refreshToken,
+        'refresh-authorization-code-1'
+    );
+});
+
+test('OAuth reports a clear error when Microsoft redirects with removed=true', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    const callback = new URL('https://login.live.com/oauth20_desktop.srf');
+    callback.searchParams.set('removed', 'true');
+    await harness.tabUpdated(harness.session.oauthTabId, {
+        url: callback.toString()
+    });
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /removed=true/);
+});
+
+test('OAuth fails with a timeout message when no code ever arrives', async function () {
+    const harness = createBackgroundHarness();
+    const first = await capture(harness, '账号1', 1);
+
+    harness.useAccount(1);
+    await harness.send({
+        type: 'oauth:start',
+        accountId: first.account.id,
+        cookieFingerprint: first.account.cookieFingerprint
+    });
+    await harness.alarmFired({ name: 'oauth-timeout' });
+
+    const status = await harness.send({
+        type: 'oauth:status',
+        accountId: first.account.id
+    });
+    assert.equal(status.status, 'error');
+    assert.match(status.error, /超时/);
 });
