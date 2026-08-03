@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Microsoft Rewards 青龙同步助手",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "description": "管理多个 Rewards 账号的 Cookie 与 OAuth Token，并同步到用户自己的青龙。",
   "minimum_chrome_version": "102",
   "permissions": [
+    "alarms",
     "cookies",
     "clipboardWrite",
     "scripting",

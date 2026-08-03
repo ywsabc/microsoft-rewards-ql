@@ -117,11 +117,11 @@ test('browser extension permissions match OAuth and QingLong sync design', funct
         fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8')
     );
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, '3.1.1');
+    assert.equal(manifest.version, '3.1.2');
     assert.equal(manifest.minimum_chrome_version, '102');
     assert.deepEqual(
         manifest.permissions.sort(),
-        ['clipboardWrite', 'cookies', 'scripting', 'storage']
+        ['alarms', 'clipboardWrite', 'cookies', 'scripting', 'storage']
     );
     assert.deepEqual(
         manifest.host_permissions.sort(),
